@@ -2,205 +2,221 @@
 
 **Your own personal AI assistant powered by Claude. Any OS. Any Platform. The Claude way.**
 
-OpenClaude is an open-source personal AI assistant inspired by [OpenClaw](https://github.com/openclaw/openclaw), rebuilt from the ground up using the Anthropic Claude SDK. It runs locally on your machine, communicates across multiple messaging platforms, and becomes uniquely yours over time through persistent memory.
+OpenClaude is an open-source personal AI assistant inspired by [OpenClaw](https://github.com/openclaw/openclaw), rebuilt from the ground up using the Anthropic Claude SDK. It implements the full **Mission Control** architecture from [@pbteja1998's viral guide](https://x.com/pbteja1998/status/2017495026230775832) — a system where 10 AI agents work together like a real team.
+
+## What It Does
+
+A squad of 10 AI agents, each with their own personality and specialty, working together on a shared task board. They wake up every 15 minutes, check for work, post comments, create deliverables, and coordinate — all autonomously.
+
+```
+Jarvis (Lead) delegates → Vision researches keywords → Fury gathers intel
+  → Loki writes content → Shuri reviews for UX → Quill creates social posts
+    → All tracked in Mission Control with full audit trail
+```
 
 ## Features
 
-- **Multi-Channel Messaging** — Chat with your AI via WebChat, Discord, Telegram, Slack, or the REST API. All channels route through a single Gateway.
-- **Claude-Powered Brain** — Uses Claude Opus 4.6 via the Anthropic SDK with native tool use for shell commands, file operations, web browsing, and more.
-- **Persistent Memory** — Remembers facts, preferences, and context across conversations. Local-first file-based storage.
-- **Skills System** — Extend capabilities with markdown-defined skills. Drop a `SKILL.md` into `skills/` and the agent learns new abilities.
-- **Task Scheduler** — Cron-based autonomous task execution. The agent wakes up on a heartbeat and proactively handles scheduled work.
-- **Multi-Agent Coordination** — Register multiple specialized agents (researcher, coder, writer) that communicate with each other via isolated sessions.
-- **Browser Automation** — Navigate websites, extract data, fill forms, take screenshots via Puppeteer.
-- **Privacy-First** — Runs locally. Your data stays on your machine. MIT licensed.
-- **WebSocket Control Plane** — Real-time Gateway events for building dashboards and integrations.
-- **Personality System** — Customize your assistant's personality via `SOUL.md`.
+### Core Platform
+- **Multi-Channel Messaging** — WebChat, Discord, Telegram, Slack, or REST API
+- **Claude-Powered Brain** — Claude Opus 4.6 via Anthropic SDK with native tool use
+- **Persistent Memory** — Local-first file-based storage that survives restarts
+- **Skills System** — Markdown-defined plugins (`SKILL.md` format)
+- **Browser Automation** — Puppeteer-based web navigation and data extraction
+- **Privacy-First** — Runs locally, your data stays on your machine
+
+### Mission Control (Multi-Agent System)
+- **10-Agent Squad** — Jarvis, Shuri, Fury, Vision, Loki, Quill, Wanda, Pepper, Friday, Wong
+- **Shared Task Board** — Kanban with 6 states: Inbox → Assigned → In Progress → Review → Done / Blocked
+- **Heartbeat System** — Staggered cron wakeups every 15 minutes per agent
+- **@Mention Notifications** — `@Vision` notifies Vision; `@all` notifies everyone
+- **Thread Subscriptions** — Comment on a task → auto-subscribed to all future updates
+- **Daily Standup** — Automated summary: completed/in-progress/blocked/needs-review
+- **Memory Stack** — Per-agent WORKING.md, daily notes, and long-term memory
+- **8 MC Tools** — Agents can create tasks, post comments, write documents, message each other
+- **Activity Feed** — Real-time audit trail of everything happening
+- **Document Storage** — Deliverables, research, protocols stored per-task
 
 ## Architecture
 
 ```
-                        ┌─────────────────┐
-                        │   Dashboard UI  │
-                        │   (WebChat)     │
-                        └────────┬────────┘
-                                 │ WebSocket
-┌──────────┐  ┌──────────┐  ┌───┴───────────────┐  ┌──────────┐
-│ Discord  │──│ Telegram │──│     Gateway       │──│  Slack   │
-│ Adapter  │  │ Adapter  │  │  (WS + HTTP)      │  │ Adapter  │
-└──────────┘  └──────────┘  └───┬───────────────┘  └──────────┘
-                                │
-                    ┌───────────┼───────────┐
-                    │           │           │
-              ┌─────┴─────┐ ┌──┴──┐ ┌──────┴──────┐
-              │  Session   │ │Agent│ │  Scheduler  │
-              │  Manager   │ │Orch.│ │  (Cron)     │
-              └────────────┘ └──┬──┘ └─────────────┘
-                                │
-                    ┌───────────┼───────────┐
-                    │           │           │
-              ┌─────┴─────┐ ┌──┴──────┐ ┌──┴───────┐
-              │  Memory   │ │  Skills │ │ Browser  │
-              │  Store    │ │ Registry│ │ Control  │
-              └───────────┘ └─────────┘ └──────────┘
+┌────────────────────────────────────────────────────────────────────┐
+│                       Gateway Server                               │
+│              ws://127.0.0.1:18789 (WS + HTTP)                      │
+├────────────────────────────────────────────────────────────────────┤
+│                                                                    │
+│  Channels          Agent Orchestrator        Mission Control       │
+│  ┌─────────┐      ┌────────────────┐       ┌────────────────┐    │
+│  │ Discord │      │ Claude SDK     │       │ Task Database  │    │
+│  │ Telegram│ ───→ │ Tool Use Loop  │ ←───→ │ 10-Agent Squad │    │
+│  │ Slack   │      │ System Prompts │       │ Heartbeats     │    │
+│  │ WebChat │      └────────────────┘       │ Notifications  │    │
+│  │ API     │              │                │ Daily Standup  │    │
+│  └─────────┘      ┌──────┴──────┐         └────────────────┘    │
+│                    │             │                                  │
+│               ┌────┴───┐  ┌─────┴────┐  ┌──────────────────┐     │
+│               │ Memory │  │  Skills  │  │ Agent Memory     │     │
+│               │ Store  │  │ Registry │  │ Stack (per-agent) │     │
+│               └────────┘  └──────────┘  └──────────────────┘     │
+└────────────────────────────────────────────────────────────────────┘
 ```
+
+## The Squad
+
+| Agent | Role | Specialty |
+|-------|------|-----------|
+| **Jarvis** | Squad Lead | Coordination, delegation, progress monitoring |
+| **Shuri** | Product Analyst | UX testing, edge cases, competitive analysis |
+| **Fury** | Customer Researcher | G2 reviews, customer intel, evidence-backed claims |
+| **Vision** | SEO Analyst | Keywords, search intent, content optimization |
+| **Loki** | Content Writer | Blog posts, copy, pro-Oxford-comma |
+| **Quill** | Social Media | Hooks, threads, build-in-public content |
+| **Wanda** | Designer | Infographics, mockups, visual thinking |
+| **Pepper** | Email Marketing | Drip sequences, lifecycle emails, conversions |
+| **Friday** | Developer | Clean code, testing, architecture |
+| **Wong** | Documentation | Knowledge bases, organization, templates |
+
+Each agent has a unique `SOUL.md` personality file in `agents/<name>/`.
 
 ## Quick Start
 
 ```bash
-# 1. Clone the repo
-git clone https://github.com/your-user/openclaude.git
-cd openclaude
+# 1. Install
+PUPPETEER_SKIP_DOWNLOAD=1 npm install
 
-# 2. Install dependencies
-npm install
-
-# 3. Configure
+# 2. Configure
 cp .env.example .env
-# Edit .env with your ANTHROPIC_API_KEY
+# Edit .env: add ANTHROPIC_API_KEY=sk-ant-...
 
-# 4. Start
+# 3. Start
 npm run dev
-
-# Or use the CLI
-npx tsx src/cli/index.ts start
 ```
 
-The Gateway starts on `http://127.0.0.1:18789` with:
-- HTTP REST API for management
-- WebSocket for real-time events
-- WebChat dashboard at the root URL
+The Gateway starts on `http://127.0.0.1:18789`:
+- **WebChat Dashboard**: `/dashboard`
+- **Mission Control**: `/mission-control`
+- **REST API**: `/api/*`
+- **WebSocket**: `ws://127.0.0.1:18789`
 
-## CLI Commands
+## CLI
 
 ```bash
-openclaude start              # Start Gateway and all services
-openclaude setup              # Interactive setup wizard
-openclaude doctor             # Diagnose configuration issues
-openclaude status             # Show system status
+openclaude start              # Start Gateway + all subsystems
+openclaude doctor             # Diagnose configuration
+openclaude status             # Show runtime status
 openclaude message "hello"    # Send a message via CLI
-openclaude agent list         # List registered agents
+openclaude agent list         # List the squad
 openclaude skill list         # List installed skills
 openclaude task list          # List scheduled tasks
 ```
 
-## Channels
+## Mission Control API
 
-| Channel   | Status | Config Required              |
-|-----------|--------|------------------------------|
-| WebChat   | Ready  | None (always available)      |
-| Discord   | Ready  | `DISCORD_BOT_TOKEN`          |
-| Telegram  | Ready  | `TELEGRAM_BOT_TOKEN`         |
-| Slack     | Ready  | `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN` |
-| REST API  | Ready  | None                         |
+```bash
+# Squad status
+curl http://localhost:18789/api/mc/stats
+curl http://localhost:18789/api/mc/agents
+
+# Task management
+curl http://localhost:18789/api/mc/tasks
+curl -X POST http://localhost:18789/api/mc/tasks \
+  -H 'Content-Type: application/json' \
+  -d '{"title":"Research competitors","description":"...","status":"inbox","priority":"high","assigneeIds":[],"creatorId":"user","tags":["research"]}'
+
+# Task comments
+curl http://localhost:18789/api/mc/tasks/{id}/messages
+
+# Activity feed
+curl http://localhost:18789/api/mc/activities?limit=20
+
+# Documents
+curl http://localhost:18789/api/mc/documents
+
+# Trigger daily standup
+curl -X POST http://localhost:18789/api/mc/standup
+
+# Heartbeat schedule
+curl http://localhost:18789/api/mc/heartbeat
+```
+
+## Core API
+
+```bash
+# Send a message to the default agent
+curl -X POST http://localhost:18789/api/message \
+  -H 'Content-Type: application/json' \
+  -d '{"content": "Hello Claude!"}'
+
+# System status
+curl http://localhost:18789/api/status
+
+# Sessions, agents, skills, channels
+curl http://localhost:18789/api/sessions
+curl http://localhost:18789/api/agents
+curl http://localhost:18789/api/skills
+curl http://localhost:18789/api/channels
+```
 
 ## Skills
 
-Skills are markdown-defined plugins in `skills/<name>/SKILL.md`:
+Bundled: **web-search**, **summarize**, **code-review**
 
+Add your own in `skills/<name>/SKILL.md`:
 ```markdown
 # My Skill
 
 ## Description
 What this skill does.
 
-## Tools
-- `my_tool`: Description of the tool
-
 ## Prompt
-Additional context injected into the agent's system prompt.
+Context injected into the agent's system prompt.
 ```
 
-### Bundled Skills
+## Memory
 
-- **web-search** — Search the web for information
-- **summarize** — Summarize long texts and documents
-- **code-review** — Review code for bugs, security issues, and best practices
+The article's "Golden Rule": **If you want to remember something, write it to a file.**
 
-## Multi-Agent Setup
+Each agent has:
+- `WORKING.md` — Current task state (read first on every wakeup)
+- `YYYY-MM-DD.md` — Daily logs
+- `MEMORY.md` — Curated long-term memory
 
-Create agents in `~/.openclaude/agents/`:
+## Heartbeat Protocol
 
-```json
-{
-  "id": "researcher",
-  "name": "Research Agent",
-  "model": "claude-opus-4-6",
-  "systemPrompt": "You are a research specialist...",
-  "skills": ["web-search", "summarize"],
-  "memoryEnabled": true
-}
+Every 15 minutes, each agent wakes up and:
+1. Reads WORKING.md for current task state
+2. Checks @mentions and notifications
+3. Scans assigned tasks
+4. Reviews activity feed
+5. Takes action or reports `HEARTBEAT_OK`
+
+Schedules are staggered so agents don't all wake at once:
 ```
-
-Agents communicate via the `sessions_send` tool, enabling mission-control style coordination (inspired by [@pbteja1998's 10-agent squad](https://x.com/pbteja1998/status/2017495026230775832)).
-
-## REST API
-
-```bash
-# Send a message
-curl -X POST http://localhost:18789/api/message \
-  -H 'Content-Type: application/json' \
-  -d '{"content": "Hello Claude!"}'
-
-# Get system status
-curl http://localhost:18789/api/status
-
-# List sessions
-curl http://localhost:18789/api/sessions
-
-# List agents
-curl http://localhost:18789/api/agents
-
-# List skills
-curl http://localhost:18789/api/skills
-
-# Schedule a task
-curl -X POST http://localhost:18789/api/tasks \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "agentId": "default",
-    "name": "Daily Summary",
-    "cron": "0 9 * * *",
-    "prompt": "Summarize my pending tasks and any important updates",
-    "enabled": true
-  }'
+:00 Pepper  :04 Friday  :08 Vision  :12 Quill  :14 Jarvis
+:02 Shuri   :06 Loki    :10 Fury    :13 Wong
+                         :07 Wanda
 ```
 
 ## Docker
 
 ```bash
-# Build and run
 docker-compose up -d
-
-# Or standalone
-docker build -t openclaude .
-docker run -p 18789:18789 --env-file .env openclaude
 ```
 
 ## Security
 
-- **DM Policy**: Set `DM_POLICY=pairing` (default) to require pairing codes for unknown senders
-- **Sandbox Mode**: Set `SANDBOX_MODE=true` (default) to disable shell command execution
-- **Allowlists**: Configure per-channel user allowlists
-- Run `openclaude doctor` to diagnose security configuration
+- **DM Pairing**: Unknown senders get a 6-char code (`DM_POLICY=pairing`)
+- **Sandbox Mode**: Disables shell execution (`SANDBOX_MODE=true`)
+- **Per-channel allowlists**: Discord/Telegram user ID filtering
+- Run `openclaude doctor` to audit your configuration
 
-## Configuration
+## Documentation
 
-Configuration is loaded from environment variables and `~/.openclaude/openclaude.json`.
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `ANTHROPIC_API_KEY` | required | Your Anthropic API key |
-| `CLAUDE_MODEL` | `claude-opus-4-6` | Default model |
-| `GATEWAY_PORT` | `18789` | Gateway port |
-| `DM_POLICY` | `pairing` | DM security policy |
-| `SANDBOX_MODE` | `true` | Enable sandbox mode |
-| `HEARTBEAT_CRON` | `*/15 * * * *` | Heartbeat schedule |
-| `MEMORY_DIR` | `~/.openclaude/memory` | Memory storage path |
-
-## Personality
-
-Customize your assistant by editing `SOUL.md` in the project root. This file defines the personality traits, communication style, and boundaries of your assistant.
+- [`CLAUDE.md`](CLAUDE.md) — Guide for Claude Code sessions (start here if you're an AI)
+- [`ARCHITECTURE.md`](ARCHITECTURE.md) — Detailed system architecture
+- [`DEVELOPMENT.md`](DEVELOPMENT.md) — How to run, test, and extend
+- [`AGENTS.md`](AGENTS.md) — Operating manual injected into all agents
+- [`SOUL.md`](SOUL.md) — Default agent personality
+- [`TOOLS.md`](TOOLS.md) — Tool usage guidelines
 
 ## Comparison with OpenClaw
 
@@ -208,14 +224,23 @@ Customize your assistant by editing `SOUL.md` in the project root. This file def
 |---------|----------|------------|
 | AI Model | Any (recommends Claude) | Claude (Anthropic SDK) |
 | Channels | 15+ | 5 (WebChat, Discord, Telegram, Slack, API) |
+| Multi-Agent | Session-based | 10-agent squad with Mission Control |
+| Task Board | Convex database | Local JSON file DB (same schema) |
 | Skills | ClawHub registry | Local SKILL.md files |
-| Memory | Markdown files | JSON file store |
+| Memory | Markdown files | WORKING.md + daily notes + MEMORY.md |
+| Heartbeats | Cron + staggered | Cron + staggered (identical pattern) |
+| Notifications | @mentions + threads | @mentions + thread subscriptions |
+| Daily Standup | Cron summary | Automated standup generator |
 | Browser | Chrome CDP | Puppeteer |
+| Dashboard | Custom React UI | Kanban + activity feed + agent cards |
 | Voice | macOS/iOS/Android | Not yet |
-| Scheduler | Cron + webhooks | Cron |
-| Multi-Agent | Full routing | Agent-to-agent messaging |
 | Canvas | A2UI | Not yet |
-| Setup | CLI wizard | CLI + env vars |
+
+## Inspired By
+
+- [OpenClaw](https://github.com/openclaw/openclaw) by Peter Steinberger
+- [Mission Control guide](https://x.com/pbteja1998/status/2017495026230775832) by Bhanu Teja P
+- The idea that AI agents should work like a team, not a search box
 
 ## License
 
