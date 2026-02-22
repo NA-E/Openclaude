@@ -10,6 +10,7 @@ export interface AgentConfig {
   name: string;
   model: string;
   systemPrompt: string;
+  sessionKey?: string;     // Unique session key (e.g., "agent:main:main")
   soulPath?: string;       // Path to SOUL.md personality file
   toolsPath?: string;      // Path to TOOLS.md capabilities file
   skills: string[];        // Enabled skill IDs

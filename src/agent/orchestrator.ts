@@ -22,8 +22,10 @@ import type {
 } from '../types/index.js';
 import type { MemoryFileStore } from '../memory/store.js';
 import type { SkillRegistry } from '../skills/registry.js';
+import type { MissionControlDB } from '../mission-control/database.js';
 import { buildSystemPrompt } from './prompts.js';
 import { buildTools, executeToolCall } from '../tools/executor.js';
+import { buildMissionControlTools, executeMCTool } from '../mission-control/tools.js';
 
 export class AgentOrchestrator {
   private client: Anthropic;
@@ -31,6 +33,10 @@ export class AgentOrchestrator {
   private agents: Map<string, AgentConfig> = new Map();
   private memory: MemoryFileStore;
   private skills: SkillRegistry;
+  private mcDb: MissionControlDB | null = null;
+
+  // Map session keys to agent configs for heartbeat support
+  private sessionKeyToAgent: Map<string, AgentConfig> = new Map();
 
   constructor(config: OpenClaudeConfig, memory: MemoryFileStore, skills: SkillRegistry) {
     this.config = config;
@@ -52,8 +58,15 @@ export class AgentOrchestrator {
     });
   }
 
+  setMissionControlDB(db: MissionControlDB) {
+    this.mcDb = db;
+  }
+
   createAgent(agentConfig: AgentConfig) {
     this.agents.set(agentConfig.id, agentConfig);
+    if (agentConfig.sessionKey) {
+      this.sessionKeyToAgent.set(agentConfig.sessionKey, agentConfig);
+    }
     logger.info('Orchestrator', `Agent registered: ${agentConfig.name} (${agentConfig.id})`);
   }
 
@@ -129,13 +142,24 @@ export class AgentOrchestrator {
             sendMessage: async () => {},
           };
 
-          const result = await executeToolCall(
-            block.name,
-            block.input as Record<string, unknown>,
-            toolContext,
-            this.skills,
-            agent.sandboxed,
-          );
+          // Check if it's a Mission Control tool
+          let result: string;
+          if (block.name.startsWith('mc_') && this.mcDb) {
+            result = executeMCTool(
+              block.name,
+              block.input as Record<string, unknown>,
+              agent.sessionKey || agent.id,
+              this.mcDb,
+            );
+          } else {
+            result = await executeToolCall(
+              block.name,
+              block.input as Record<string, unknown>,
+              toolContext,
+              this.skills,
+              agent.sandboxed,
+            );
+          }
 
           // Add assistant message with tool use
           messages.push({ role: 'assistant', content: assistantContent });
@@ -226,6 +250,13 @@ export class AgentOrchestrator {
       tools.push(tool);
     }
 
+    // Mission Control tools (available to all agents in the squad)
+    if (this.mcDb) {
+      for (const tool of buildMissionControlTools()) {
+        tools.push(tool);
+      }
+    }
+
     // Skill tools
     const skillTools = this.skills.getToolsForAgent(agent.skills);
     for (const tool of skillTools) {
@@ -294,6 +325,41 @@ export class AgentOrchestrator {
       senderId: fromAgentId,
       senderName: this.agents.get(fromAgentId)?.name || fromAgentId,
       content,
+    };
+
+    return this.processMessage(session, inbound);
+  }
+
+  // ─── Heartbeat: Process heartbeat wakeup for an agent ──────────
+
+  async processHeartbeat(sessionKey: string, prompt: string): Promise<string> {
+    const agent = this.sessionKeyToAgent.get(sessionKey);
+    if (!agent) {
+      logger.warn('Orchestrator', `No agent found for session key: ${sessionKey}`);
+      return 'HEARTBEAT_OK';
+    }
+
+    // Create an isolated session for the heartbeat (one-shot)
+    const session: Session = {
+      id: uuid(),
+      agentId: agent.id,
+      channelId: 'heartbeat',
+      senderId: 'scheduler',
+      type: 'main',
+      status: 'active',
+      activationMode: 'always',
+      messages: [],
+      metadata: { heartbeat: true, sessionKey },
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+
+    const inbound: InboundMessage = {
+      channelType: 'api',
+      channelId: 'heartbeat',
+      senderId: 'scheduler',
+      senderName: 'Heartbeat System',
+      content: prompt,
     };
 
     return this.processMessage(session, inbound);

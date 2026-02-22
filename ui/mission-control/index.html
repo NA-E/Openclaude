@@ -1,0 +1,615 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Mission Control — OpenClaude</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    :root {
+      --bg: #0d0d12;
+      --surface: #13131c;
+      --surface2: #1c1c2a;
+      --surface3: #252536;
+      --border: #2d2d40;
+      --text: #e8e8f0;
+      --text-muted: #7c7c98;
+      --text-dim: #55556a;
+      --accent: #6c5ce7;
+      --accent-glow: rgba(108, 92, 231, 0.2);
+      --green: #00cec9;
+      --yellow: #fdcb6e;
+      --red: #ff7675;
+      --orange: #e17055;
+      --blue: #74b9ff;
+      --radius: 8px;
+      --radius-lg: 12px;
+    }
+
+    body {
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    /* ── Header ───────────────────────────── */
+    .header {
+      height: 52px;
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      padding: 0 24px;
+      gap: 16px;
+      flex-shrink: 0;
+    }
+    .header h1 { font-size: 15px; font-weight: 600; letter-spacing: -0.3px; }
+    .header .logo { font-size: 20px; }
+    .header .stats { margin-left: auto; display: flex; gap: 20px; font-size: 12px; color: var(--text-muted); }
+    .header .stats .stat-val { color: var(--text); font-weight: 600; }
+
+    /* ── Main Layout ──────────────────────── */
+    .layout {
+      flex: 1;
+      display: flex;
+      overflow: hidden;
+    }
+
+    /* ── Left Panel: Agents + Activity ────── */
+    .left-panel {
+      width: 280px;
+      background: var(--surface);
+      border-right: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      flex-shrink: 0;
+      overflow: hidden;
+    }
+
+    .panel-header {
+      padding: 14px 16px 10px;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      color: var(--text-muted);
+      border-bottom: 1px solid var(--border);
+    }
+
+    .agent-list {
+      padding: 8px;
+      overflow-y: auto;
+      max-height: 40%;
+    }
+
+    .agent-card {
+      padding: 10px 12px;
+      background: var(--surface2);
+      border-radius: var(--radius);
+      margin-bottom: 6px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+    .agent-card:hover { background: var(--surface3); }
+
+    .agent-avatar {
+      width: 32px; height: 32px;
+      border-radius: 50%;
+      background: var(--accent);
+      display: flex; align-items: center; justify-content: center;
+      font-size: 12px; font-weight: 700; color: white;
+      flex-shrink: 0;
+    }
+    .agent-avatar.idle { background: var(--surface3); color: var(--text-muted); }
+    .agent-avatar.active { background: var(--green); }
+    .agent-avatar.blocked { background: var(--red); }
+
+    .agent-info { flex: 1; min-width: 0; }
+    .agent-name { font-size: 13px; font-weight: 600; }
+    .agent-role { font-size: 11px; color: var(--text-muted); }
+    .agent-tasks { font-size: 10px; color: var(--text-dim); }
+
+    /* Activity Feed */
+    .activity-feed {
+      flex: 1;
+      overflow-y: auto;
+      padding: 8px;
+      border-top: 1px solid var(--border);
+    }
+
+    .activity-item {
+      padding: 8px 10px;
+      font-size: 12px;
+      color: var(--text-muted);
+      border-bottom: 1px solid rgba(45,45,64,0.5);
+    }
+    .activity-item .activity-time {
+      font-size: 10px;
+      color: var(--text-dim);
+    }
+    .activity-item .activity-agent {
+      color: var(--accent);
+      font-weight: 500;
+    }
+
+    /* ── Center: Kanban Board ────────────── */
+    .kanban {
+      flex: 1;
+      display: flex;
+      gap: 12px;
+      padding: 16px;
+      overflow-x: auto;
+    }
+
+    .kanban-column {
+      min-width: 240px;
+      max-width: 280px;
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      background: var(--surface);
+      border-radius: var(--radius-lg);
+      border: 1px solid var(--border);
+      overflow: hidden;
+    }
+
+    .column-header {
+      padding: 12px 14px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      border-bottom: 1px solid var(--border);
+      font-size: 12px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    .column-header .count {
+      background: var(--surface3);
+      padding: 2px 8px;
+      border-radius: 10px;
+      font-size: 11px;
+      color: var(--text-muted);
+      font-weight: 400;
+    }
+    .column-header .dot {
+      width: 8px; height: 8px; border-radius: 50%;
+    }
+    .dot.inbox { background: var(--text-muted); }
+    .dot.assigned { background: var(--blue); }
+    .dot.in_progress { background: var(--yellow); }
+    .dot.review { background: var(--orange); }
+    .dot.done { background: var(--green); }
+    .dot.blocked { background: var(--red); }
+
+    .column-tasks {
+      flex: 1;
+      overflow-y: auto;
+      padding: 8px;
+    }
+
+    .task-card {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 12px;
+      margin-bottom: 8px;
+      cursor: pointer;
+      transition: border-color 0.15s, box-shadow 0.15s;
+    }
+    .task-card:hover {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 1px var(--accent-glow);
+    }
+
+    .task-title { font-size: 13px; font-weight: 500; margin-bottom: 6px; }
+    .task-desc { font-size: 11px; color: var(--text-muted); margin-bottom: 8px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+    .task-meta { display: flex; gap: 6px; flex-wrap: wrap; }
+    .task-tag {
+      font-size: 10px;
+      padding: 2px 6px;
+      border-radius: 4px;
+      background: var(--surface3);
+      color: var(--text-muted);
+    }
+    .task-priority {
+      font-size: 10px;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-weight: 600;
+    }
+    .task-priority.urgent { background: rgba(255,118,117,0.15); color: var(--red); }
+    .task-priority.high { background: rgba(225,112,85,0.15); color: var(--orange); }
+    .task-priority.medium { background: rgba(253,203,110,0.15); color: var(--yellow); }
+    .task-priority.low { background: rgba(116,185,255,0.15); color: var(--blue); }
+
+    .task-assignees {
+      display: flex;
+      gap: -4px;
+      margin-top: 8px;
+    }
+    .task-assignee {
+      width: 22px; height: 22px;
+      border-radius: 50%;
+      background: var(--accent);
+      display: flex; align-items: center; justify-content: center;
+      font-size: 9px; color: white; font-weight: 600;
+      border: 2px solid var(--surface2);
+    }
+
+    /* ── Right Panel: Detail / Documents ──── */
+    .right-panel {
+      width: 320px;
+      background: var(--surface);
+      border-left: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      flex-shrink: 0;
+      overflow: hidden;
+    }
+
+    .detail-header {
+      padding: 14px 16px;
+      border-bottom: 1px solid var(--border);
+    }
+    .detail-title { font-size: 14px; font-weight: 600; margin-bottom: 4px; }
+    .detail-status { font-size: 11px; color: var(--text-muted); }
+
+    .detail-body {
+      flex: 1;
+      overflow-y: auto;
+      padding: 12px 16px;
+    }
+
+    .detail-section {
+      margin-bottom: 16px;
+    }
+    .detail-section h4 {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.8px;
+      color: var(--text-muted);
+      margin-bottom: 8px;
+    }
+    .detail-section p {
+      font-size: 13px;
+      line-height: 1.5;
+      color: var(--text);
+    }
+
+    .comment {
+      padding: 10px 0;
+      border-bottom: 1px solid rgba(45,45,64,0.3);
+    }
+    .comment-header {
+      display: flex;
+      gap: 6px;
+      align-items: center;
+      margin-bottom: 4px;
+    }
+    .comment-author { font-size: 12px; font-weight: 600; color: var(--accent); }
+    .comment-time { font-size: 10px; color: var(--text-dim); }
+    .comment-body { font-size: 12px; color: var(--text-muted); line-height: 1.4; }
+
+    .comment-input {
+      padding: 12px 16px;
+      border-top: 1px solid var(--border);
+      display: flex;
+      gap: 8px;
+    }
+    .comment-input input {
+      flex: 1;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 8px 12px;
+      color: var(--text);
+      font-size: 12px;
+      outline: none;
+    }
+    .comment-input input:focus { border-color: var(--accent); }
+    .comment-input button {
+      background: var(--accent);
+      border: none;
+      border-radius: var(--radius);
+      padding: 8px 14px;
+      color: white;
+      font-size: 12px;
+      cursor: pointer;
+    }
+
+    /* ── Empty State ──────────────────────── */
+    .empty-state {
+      padding: 24px;
+      text-align: center;
+      color: var(--text-dim);
+      font-size: 12px;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Header -->
+  <div class="header">
+    <span class="logo">&#129504;</span>
+    <h1>Mission Control</h1>
+    <div class="stats">
+      <span>Agents: <span class="stat-val" id="stat-agents">0</span></span>
+      <span>Tasks: <span class="stat-val" id="stat-tasks">0</span></span>
+      <span>Pending: <span class="stat-val" id="stat-pending">0</span></span>
+      <span>Uptime: <span class="stat-val" id="stat-uptime">--</span></span>
+    </div>
+  </div>
+
+  <div class="layout">
+    <!-- Left: Agents + Activity -->
+    <div class="left-panel">
+      <div class="panel-header">Squad</div>
+      <div class="agent-list" id="agent-list"></div>
+
+      <div class="panel-header">Activity Feed</div>
+      <div class="activity-feed" id="activity-feed">
+        <div class="empty-state">Waiting for activity...</div>
+      </div>
+    </div>
+
+    <!-- Center: Kanban Board -->
+    <div class="kanban" id="kanban">
+      <div class="kanban-column">
+        <div class="column-header"><span class="dot inbox"></span> Inbox <span class="count" id="count-inbox">0</span></div>
+        <div class="column-tasks" id="col-inbox"></div>
+      </div>
+      <div class="kanban-column">
+        <div class="column-header"><span class="dot assigned"></span> Assigned <span class="count" id="count-assigned">0</span></div>
+        <div class="column-tasks" id="col-assigned"></div>
+      </div>
+      <div class="kanban-column">
+        <div class="column-header"><span class="dot in_progress"></span> In Progress <span class="count" id="count-in_progress">0</span></div>
+        <div class="column-tasks" id="col-in_progress"></div>
+      </div>
+      <div class="kanban-column">
+        <div class="column-header"><span class="dot review"></span> Review <span class="count" id="count-review">0</span></div>
+        <div class="column-tasks" id="col-review"></div>
+      </div>
+      <div class="kanban-column">
+        <div class="column-header"><span class="dot done"></span> Done <span class="count" id="count-done">0</span></div>
+        <div class="column-tasks" id="col-done"></div>
+      </div>
+      <div class="kanban-column">
+        <div class="column-header"><span class="dot blocked"></span> Blocked <span class="count" id="count-blocked">0</span></div>
+        <div class="column-tasks" id="col-blocked"></div>
+      </div>
+    </div>
+
+    <!-- Right: Detail Panel -->
+    <div class="right-panel" id="detail-panel">
+      <div class="detail-header">
+        <div class="detail-title" id="detail-title">Select a task</div>
+        <div class="detail-status" id="detail-status">Click any task card to view details</div>
+      </div>
+      <div class="detail-body" id="detail-body">
+        <div class="empty-state">No task selected</div>
+      </div>
+      <div class="comment-input" id="comment-input" style="display:none">
+        <input type="text" id="comment-text" placeholder="Add a comment..." />
+        <button onclick="postComment()">Send</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const API = `http://${location.hostname || '127.0.0.1'}:${location.port || '18789'}`;
+    let agents = [];
+    let allTasks = {};
+    let selectedTaskId = null;
+
+    // ── Data Fetching ──────────────────────
+
+    async function fetchData() {
+      try {
+        const [statsRes, agentsRes, tasksRes, activitiesRes] = await Promise.all([
+          fetch(`${API}/api/mc/stats`),
+          fetch(`${API}/api/mc/agents`),
+          fetch(`${API}/api/mc/tasks`),
+          fetch(`${API}/api/mc/activities?limit=30`),
+        ]);
+
+        const stats = await statsRes.json();
+        agents = await agentsRes.json();
+        const tasks = await tasksRes.json();
+        const activities = await activitiesRes.json();
+
+        updateStats(stats);
+        renderAgents(agents);
+        renderKanban(tasks);
+        renderActivities(activities);
+      } catch (e) {
+        console.error('Fetch error:', e);
+      }
+    }
+
+    function updateStats(stats) {
+      document.getElementById('stat-agents').textContent = stats.totalAgents || 0;
+      document.getElementById('stat-tasks').textContent = stats.totalTasks || 0;
+      document.getElementById('stat-pending').textContent = stats.pendingNotifications || 0;
+    }
+
+    // ── Render Agents ──────────────────────
+
+    function renderAgents(agents) {
+      const list = document.getElementById('agent-list');
+      list.innerHTML = '';
+      for (const agent of agents) {
+        const card = document.createElement('div');
+        card.className = 'agent-card';
+        card.innerHTML = `
+          <div class="agent-avatar ${agent.status}">${agent.avatar}</div>
+          <div class="agent-info">
+            <div class="agent-name">${agent.name}</div>
+            <div class="agent-role">${agent.role}</div>
+            <div class="agent-tasks">${agent.status} · ${agent.level}</div>
+          </div>
+        `;
+        list.appendChild(card);
+      }
+    }
+
+    // ── Render Kanban Board ────────────────
+
+    function renderKanban(tasks) {
+      const statuses = ['inbox', 'assigned', 'in_progress', 'review', 'done', 'blocked'];
+      const grouped = {};
+      for (const s of statuses) grouped[s] = [];
+      for (const task of tasks) {
+        if (grouped[task.status]) grouped[task.status].push(task);
+      }
+      allTasks = {};
+      for (const task of tasks) allTasks[task.id] = task;
+
+      for (const status of statuses) {
+        const col = document.getElementById(`col-${status}`);
+        const count = document.getElementById(`count-${status}`);
+        col.innerHTML = '';
+        count.textContent = grouped[status].length;
+
+        for (const task of grouped[status]) {
+          const card = document.createElement('div');
+          card.className = 'task-card';
+          card.onclick = () => selectTask(task.id);
+
+          const assigneeAvatars = task.assigneeIds.map(id => {
+            const agent = agents.find(a => a.id === id);
+            return agent ? `<span class="task-assignee">${agent.avatar}</span>` : '';
+          }).join('');
+
+          card.innerHTML = `
+            <div class="task-title">${task.title}</div>
+            <div class="task-desc">${task.description}</div>
+            <div class="task-meta">
+              <span class="task-priority ${task.priority}">${task.priority}</span>
+              ${task.tags.map(t => `<span class="task-tag">${t}</span>`).join('')}
+            </div>
+            <div class="task-assignees">${assigneeAvatars}</div>
+          `;
+          col.appendChild(card);
+        }
+      }
+    }
+
+    // ── Render Activities ──────────────────
+
+    function renderActivities(activities) {
+      const feed = document.getElementById('activity-feed');
+      if (activities.length === 0) {
+        feed.innerHTML = '<div class="empty-state">No activity yet</div>';
+        return;
+      }
+      feed.innerHTML = '';
+      for (const a of activities) {
+        const agent = agents.find(ag => ag.id === a.agentId);
+        const time = new Date(a.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+        const item = document.createElement('div');
+        item.className = 'activity-item';
+        item.innerHTML = `
+          <span class="activity-agent">${agent?.name || 'System'}</span> ${a.message}
+          <div class="activity-time">${time}</div>
+        `;
+        feed.appendChild(item);
+      }
+    }
+
+    // ── Task Detail ────────────────────────
+
+    async function selectTask(taskId) {
+      selectedTaskId = taskId;
+      const task = allTasks[taskId];
+      if (!task) return;
+
+      document.getElementById('detail-title').textContent = task.title;
+      document.getElementById('detail-status').textContent = `${task.status.toUpperCase()} · ${task.priority} priority`;
+
+      const body = document.getElementById('detail-body');
+      const assigneeNames = task.assigneeIds.map(id => {
+        const agent = agents.find(a => a.id === id);
+        return agent?.name || id;
+      }).join(', ');
+
+      let html = `
+        <div class="detail-section">
+          <h4>Description</h4>
+          <p>${task.description}</p>
+        </div>
+        <div class="detail-section">
+          <h4>Assigned To</h4>
+          <p>${assigneeNames || 'Unassigned'}</p>
+        </div>
+        <div class="detail-section">
+          <h4>Comments</h4>
+      `;
+
+      // Fetch comments
+      try {
+        const res = await fetch(`${API}/api/mc/tasks/${taskId}/messages`);
+        const messages = await res.json();
+        if (messages.length === 0) {
+          html += '<div class="empty-state">No comments yet</div>';
+        } else {
+          for (const msg of messages) {
+            const agent = agents.find(a => a.id === msg.fromAgentId);
+            const time = new Date(msg.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+            html += `
+              <div class="comment">
+                <div class="comment-header">
+                  <span class="comment-author">${agent?.name || msg.fromAgentId}</span>
+                  <span class="comment-time">${time}</span>
+                </div>
+                <div class="comment-body">${msg.content}</div>
+              </div>
+            `;
+          }
+        }
+      } catch {
+        html += '<div class="empty-state">Failed to load comments</div>';
+      }
+
+      html += '</div>';
+      body.innerHTML = html;
+      document.getElementById('comment-input').style.display = 'flex';
+    }
+
+    async function postComment() {
+      if (!selectedTaskId) return;
+      const input = document.getElementById('comment-text');
+      const content = input.value.trim();
+      if (!content) return;
+
+      try {
+        await fetch(`${API}/api/mc/tasks/${selectedTaskId}/messages`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ content, fromAgentId: 'user' }),
+        });
+        input.value = '';
+        selectTask(selectedTaskId);
+      } catch (e) {
+        console.error('Post comment error:', e);
+      }
+    }
+
+    document.getElementById('comment-text').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); postComment(); }
+    });
+
+    // ── Polling ────────────────────────────
+    fetchData();
+    setInterval(fetchData, 5000);
+  </script>
+</body>
+</html>

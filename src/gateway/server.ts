@@ -26,6 +26,13 @@ import { AgentOrchestrator } from '../agent/orchestrator.js';
 import { MemoryFileStore } from '../memory/store.js';
 import { SkillRegistry } from '../skills/registry.js';
 import { TaskScheduler } from '../scheduler/scheduler.js';
+import { MissionControlDB } from '../mission-control/database.js';
+import { initializeSquad, SQUAD_ROSTER } from '../mission-control/squad.js';
+import { HeartbeatSystem } from '../mission-control/heartbeat.js';
+import { AgentMemoryStack } from '../mission-control/memory-stack.js';
+import { NotificationDaemon } from '../notifications/daemon.js';
+import { DailyStandupGenerator } from '../standup/generator.js';
+import { resolve } from 'path';
 
 export class Gateway {
   private app: Express;
@@ -40,6 +47,14 @@ export class Gateway {
   public memory: MemoryFileStore;
   public skills: SkillRegistry;
   public scheduler: TaskScheduler;
+
+  // Mission Control subsystems
+  public mcDb: MissionControlDB;
+  public heartbeat: HeartbeatSystem;
+  public memoryStack: AgentMemoryStack;
+  public notificationDaemon: NotificationDaemon;
+  public standupGenerator: DailyStandupGenerator;
+
   private startTime: number = Date.now();
 
   constructor(config: OpenClaudeConfig) {
@@ -49,7 +64,7 @@ export class Gateway {
     this.server = createServer(this.app);
     this.wss = new WebSocketServer({ server: this.server });
 
-    // Initialize subsystems
+    // Initialize core subsystems
     this.memory = new MemoryFileStore(config.memory.dir);
     this.skills = new SkillRegistry(config.workspace);
     this.sessions = new SessionManager();
@@ -57,8 +72,18 @@ export class Gateway {
     this.router = new ChannelRouter(config, this.handleInbound.bind(this));
     this.scheduler = new TaskScheduler(config, this.orchestrator, this);
 
+    // Initialize Mission Control subsystems
+    const mcDataDir = resolve(config.workspace, '..', 'mission-control');
+    this.mcDb = new MissionControlDB(mcDataDir);
+    this.memoryStack = new AgentMemoryStack(config.workspace);
+    this.orchestrator.setMissionControlDB(this.mcDb);
+    this.heartbeat = new HeartbeatSystem(this.mcDb, this.orchestrator, this.memoryStack);
+    this.notificationDaemon = new NotificationDaemon(this.mcDb, this.orchestrator);
+    this.standupGenerator = new DailyStandupGenerator(this.mcDb, this);
+
     this.setupWebSocket();
     this.setupHTTPRoutes();
+    this.setupMissionControlRoutes();
   }
 
   // ─── WebSocket ─────────────────────────────────────────────────
@@ -277,6 +302,98 @@ export class Gateway {
     });
   }
 
+  // ─── Mission Control HTTP Routes ──────────────────────────────
+
+  private setupMissionControlRoutes() {
+    // Stats
+    this.app.get('/api/mc/stats', (_req, res) => {
+      res.json(this.mcDb.getStats());
+    });
+
+    // Agents
+    this.app.get('/api/mc/agents', (_req, res) => {
+      res.json(this.mcDb.listAgents());
+    });
+
+    // Tasks
+    this.app.get('/api/mc/tasks', (req, res) => {
+      const status = req.query.status as string | undefined;
+      const assignee = req.query.assignee as string | undefined;
+      let assigneeId: string | undefined;
+      if (assignee) {
+        const agent = this.mcDb.getAgentByName(assignee);
+        assigneeId = agent?.id;
+      }
+      res.json(this.mcDb.listTasks({
+        status: status as 'inbox' | 'assigned' | 'in_progress' | 'review' | 'done' | 'blocked' | undefined,
+        assigneeId,
+      }));
+    });
+
+    this.app.post('/api/mc/tasks', (req, res) => {
+      const task = this.mcDb.createTask(req.body);
+      res.json(task);
+    });
+
+    this.app.patch('/api/mc/tasks/:id', (req, res) => {
+      const task = this.mcDb.updateTask(req.params.id, req.body);
+      if (!task) return res.status(404).json({ error: 'Task not found' });
+      res.json(task);
+    });
+
+    // Task messages (comments)
+    this.app.get('/api/mc/tasks/:id/messages', (req, res) => {
+      res.json(this.mcDb.getMessages(req.params.id));
+    });
+
+    this.app.post('/api/mc/tasks/:id/messages', (req, res) => {
+      const msg = this.mcDb.createMessage({
+        taskId: req.params.id,
+        fromAgentId: req.body.fromAgentId || 'user',
+        content: req.body.content,
+        attachments: req.body.attachments || [],
+        mentions: req.body.mentions || [],
+      });
+      res.json(msg);
+    });
+
+    // Activities
+    this.app.get('/api/mc/activities', (req, res) => {
+      const limit = parseInt(req.query.limit as string) || 50;
+      res.json(this.mcDb.getActivities(limit));
+    });
+
+    // Documents
+    this.app.get('/api/mc/documents', (req, res) => {
+      res.json(this.mcDb.listDocuments({
+        taskId: req.query.taskId as string | undefined,
+        type: req.query.type as 'deliverable' | 'research' | 'protocol' | 'reference' | 'draft' | undefined,
+      }));
+    });
+
+    this.app.post('/api/mc/documents', (req, res) => {
+      const doc = this.mcDb.createDocument(req.body);
+      res.json(doc);
+    });
+
+    // Notifications
+    this.app.get('/api/mc/notifications', (req, res) => {
+      const agentId = req.query.agentId as string | undefined;
+      res.json(this.mcDb.getUndeliveredNotifications(agentId));
+    });
+
+    // Heartbeat schedule
+    this.app.get('/api/mc/heartbeat', (_req, res) => {
+      res.json(this.heartbeat.getSchedule());
+    });
+
+    // Daily standup (trigger manually)
+    this.app.post('/api/mc/standup', async (_req, res) => {
+      const standup = this.standupGenerator.generate();
+      res.json({ standup });
+    });
+  }
+
   // ─── Status ───────────────────────────────────────────────────
 
   public getStatus(): SystemStatus {
@@ -304,24 +421,57 @@ export class Gateway {
     await this.skills.loadAll();
     logger.info('Gateway', `Loaded ${this.skills.listSkills().length} skills`);
 
+    // Initialize the 10-agent squad in Mission Control
+    const squad = initializeSquad(this.mcDb);
+    logger.info('Gateway', `Squad: ${squad.map((a) => a.name).join(', ')}`);
+
+    // Register squad agents with the orchestrator
+    for (const member of SQUAD_ROSTER) {
+      const mcAgent = this.mcDb.getAgentBySessionKey(member.sessionKey);
+      if (mcAgent) {
+        this.orchestrator.createAgent({
+          id: mcAgent.id,
+          name: member.name,
+          model: this.config.agent.defaultModel,
+          systemPrompt: '',
+          sessionKey: member.sessionKey,
+          soulPath: resolve(process.cwd(), 'agents', member.name.toLowerCase(), 'SOUL.md'),
+          skills: member.skills,
+          maxTokens: this.config.agent.maxTokens,
+          temperature: this.config.agent.temperature,
+          memoryEnabled: true,
+          sandboxed: this.config.security.sandboxMode,
+        });
+      }
+    }
+
     // Connect channels
     await this.router.connectAll();
 
     // Start scheduler
     this.scheduler.start();
 
+    // Start Mission Control subsystems
+    this.heartbeat.start();
+    this.notificationDaemon.start();
+    this.standupGenerator.start();
+
     // Start HTTP + WS server
     const { host, port } = this.config.gateway;
     this.server.listen(port, host, () => {
       logger.success('Gateway', `OpenClaude Gateway running on http://${host}:${port}`);
       logger.info('Gateway', `WebSocket available on ws://${host}:${port}`);
-      logger.info('Gateway', `Dashboard at http://${host}:${port}`);
+      logger.info('Gateway', `Dashboard at http://${host}:${port}/dashboard`);
+      logger.info('Gateway', `Mission Control at http://${host}:${port}/mission-control`);
     });
   }
 
   async stop() {
     logger.info('Gateway', 'Shutting down...');
     this.scheduler.stop();
+    this.heartbeat.stop();
+    this.notificationDaemon.stop();
+    this.standupGenerator.stop();
     await this.router.disconnectAll();
     this.wss.close();
     this.server.close();
