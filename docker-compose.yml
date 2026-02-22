@@ -1,0 +1,24 @@
+version: '3.8'
+
+services:
+  openclaude:
+    build: .
+    ports:
+      - "18789:18789"
+    env_file:
+      - .env
+    volumes:
+      - openclaude-data:/root/.openclaude
+      - ./skills:/app/skills
+      - ./SOUL.md:/app/SOUL.md
+      - ./AGENTS.md:/app/AGENTS.md
+      - ./TOOLS.md:/app/TOOLS.md
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:18789/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  openclaude-data:

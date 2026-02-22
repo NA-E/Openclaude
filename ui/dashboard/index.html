@@ -1,0 +1,590 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>OpenClaude Dashboard</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    :root {
+      --bg: #0a0a0f;
+      --surface: #12121a;
+      --surface2: #1a1a26;
+      --border: #2a2a3a;
+      --text: #e4e4ef;
+      --text-muted: #8888a0;
+      --accent: #6c5ce7;
+      --accent-light: #a29bfe;
+      --success: #00cec9;
+      --warning: #fdcb6e;
+      --danger: #ff7675;
+      --radius: 8px;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, monospace;
+      background: var(--bg);
+      color: var(--text);
+      height: 100vh;
+      display: flex;
+    }
+
+    /* ── Sidebar ─────────────────────────── */
+    .sidebar {
+      width: 260px;
+      background: var(--surface);
+      border-right: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      flex-shrink: 0;
+    }
+
+    .sidebar-header {
+      padding: 20px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .sidebar-header h1 {
+      font-size: 16px;
+      font-weight: 600;
+    }
+
+    .sidebar-header .logo {
+      font-size: 24px;
+    }
+
+    .sidebar-section {
+      padding: 12px 16px 6px;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      color: var(--text-muted);
+    }
+
+    .sidebar-item {
+      padding: 10px 20px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      cursor: pointer;
+      font-size: 13px;
+      color: var(--text-muted);
+      transition: all 0.15s;
+    }
+
+    .sidebar-item:hover { background: var(--surface2); color: var(--text); }
+    .sidebar-item.active { background: var(--surface2); color: var(--accent-light); border-left: 2px solid var(--accent); }
+
+    .sidebar-item .indicator {
+      width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0;
+    }
+    .indicator.online { background: var(--success); }
+    .indicator.offline { background: var(--danger); }
+
+    .sidebar-footer {
+      margin-top: auto;
+      padding: 16px 20px;
+      border-top: 1px solid var(--border);
+      font-size: 11px;
+      color: var(--text-muted);
+    }
+
+    /* ── Main Content ────────────────────── */
+    .main {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+    }
+
+    /* ── Top Bar ─────────────────────────── */
+    .topbar {
+      height: 56px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      padding: 0 24px;
+      gap: 16px;
+      background: var(--surface);
+    }
+
+    .topbar h2 { font-size: 14px; font-weight: 500; }
+
+    .status-badge {
+      font-size: 11px;
+      padding: 3px 10px;
+      border-radius: 12px;
+      background: rgba(0, 206, 201, 0.15);
+      color: var(--success);
+    }
+
+    .status-badge.error {
+      background: rgba(255, 118, 117, 0.15);
+      color: var(--danger);
+    }
+
+    /* ── Chat Area ───────────────────────── */
+    .chat-area {
+      flex: 1;
+      overflow-y: auto;
+      padding: 24px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    .message {
+      max-width: 75%;
+      padding: 12px 16px;
+      border-radius: var(--radius);
+      font-size: 14px;
+      line-height: 1.5;
+      white-space: pre-wrap;
+      word-wrap: break-word;
+    }
+
+    .message.user {
+      align-self: flex-end;
+      background: var(--accent);
+      color: white;
+      border-bottom-right-radius: 2px;
+    }
+
+    .message.assistant {
+      align-self: flex-start;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-bottom-left-radius: 2px;
+    }
+
+    .message .meta {
+      font-size: 11px;
+      color: var(--text-muted);
+      margin-top: 6px;
+    }
+
+    .message.user .meta { color: rgba(255,255,255,0.6); }
+
+    .typing-indicator {
+      align-self: flex-start;
+      color: var(--text-muted);
+      font-size: 13px;
+      padding: 8px 0;
+      display: none;
+    }
+
+    .typing-indicator.visible { display: block; }
+
+    .typing-indicator span {
+      animation: blink 1.4s infinite;
+    }
+    .typing-indicator span:nth-child(2) { animation-delay: 0.2s; }
+    .typing-indicator span:nth-child(3) { animation-delay: 0.4s; }
+
+    @keyframes blink {
+      0%, 20% { opacity: 1; }
+      50% { opacity: 0.3; }
+    }
+
+    /* ── Input Area ──────────────────────── */
+    .input-area {
+      padding: 16px 24px;
+      border-top: 1px solid var(--border);
+      background: var(--surface);
+      display: flex;
+      gap: 12px;
+    }
+
+    .input-area input {
+      flex: 1;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 12px 16px;
+      color: var(--text);
+      font-size: 14px;
+      font-family: inherit;
+      outline: none;
+      transition: border-color 0.15s;
+    }
+
+    .input-area input:focus { border-color: var(--accent); }
+    .input-area input::placeholder { color: var(--text-muted); }
+
+    .input-area button {
+      background: var(--accent);
+      border: none;
+      border-radius: var(--radius);
+      padding: 12px 24px;
+      color: white;
+      font-size: 14px;
+      cursor: pointer;
+      font-family: inherit;
+      transition: opacity 0.15s;
+    }
+
+    .input-area button:hover { opacity: 0.9; }
+    .input-area button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    /* ── Right Panel ─────────────────────── */
+    .right-panel {
+      width: 280px;
+      background: var(--surface);
+      border-left: 1px solid var(--border);
+      padding: 20px;
+      overflow-y: auto;
+      flex-shrink: 0;
+    }
+
+    .panel-section {
+      margin-bottom: 24px;
+    }
+
+    .panel-section h3 {
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      color: var(--text-muted);
+      margin-bottom: 12px;
+    }
+
+    .stat-row {
+      display: flex;
+      justify-content: space-between;
+      padding: 6px 0;
+      font-size: 13px;
+    }
+
+    .stat-row .label { color: var(--text-muted); }
+    .stat-row .value { color: var(--text); font-weight: 500; }
+
+    .channel-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 0;
+      font-size: 13px;
+    }
+
+    .task-item {
+      padding: 8px 10px;
+      background: var(--surface2);
+      border-radius: var(--radius);
+      margin-bottom: 6px;
+      font-size: 12px;
+    }
+
+    .task-item .task-name { font-weight: 500; }
+    .task-item .task-cron { color: var(--text-muted); font-size: 11px; }
+  </style>
+</head>
+<body>
+
+  <!-- Sidebar -->
+  <div class="sidebar">
+    <div class="sidebar-header">
+      <span class="logo">&#129504;</span>
+      <h1>OpenClaude</h1>
+    </div>
+
+    <div class="sidebar-section">Channels</div>
+    <div class="sidebar-item active">
+      <span class="indicator online"></span>
+      WebChat
+    </div>
+    <div class="sidebar-item" id="ch-discord">
+      <span class="indicator offline"></span>
+      Discord
+    </div>
+    <div class="sidebar-item" id="ch-telegram">
+      <span class="indicator offline"></span>
+      Telegram
+    </div>
+    <div class="sidebar-item" id="ch-slack">
+      <span class="indicator offline"></span>
+      Slack
+    </div>
+
+    <div class="sidebar-section">Agents</div>
+    <div class="sidebar-item" id="agent-default">
+      <span class="indicator online"></span>
+      Claude (default)
+    </div>
+
+    <div class="sidebar-section">Quick Actions</div>
+    <div class="sidebar-item" onclick="sendCommand('/status')">System Status</div>
+    <div class="sidebar-item" onclick="sendCommand('/new')">New Session</div>
+    <div class="sidebar-item" onclick="sendCommand('/compact')">Compact History</div>
+
+    <div class="sidebar-footer">
+      OpenClaude v0.1.0 | Gateway ws://127.0.0.1:18789
+    </div>
+  </div>
+
+  <!-- Main Chat -->
+  <div class="main">
+    <div class="topbar">
+      <h2>WebChat</h2>
+      <span class="status-badge" id="connection-status">Connecting...</span>
+      <span style="flex:1"></span>
+      <span style="font-size:12px;color:var(--text-muted)" id="session-id"></span>
+    </div>
+
+    <div class="chat-area" id="chat-area">
+      <div class="message assistant">
+        Welcome to OpenClaude! I'm your personal AI assistant powered by Claude.
+
+Send me a message or use commands like /status, /new, or /compact.
+        <div class="meta">System</div>
+      </div>
+    </div>
+
+    <div class="typing-indicator" id="typing">
+      Claude is thinking<span>.</span><span>.</span><span>.</span>
+    </div>
+
+    <div class="input-area">
+      <input
+        type="text"
+        id="message-input"
+        placeholder="Message Claude... (Enter to send)"
+        autocomplete="off"
+      />
+      <button id="send-btn" onclick="sendMessage()">Send</button>
+    </div>
+  </div>
+
+  <!-- Right Panel -->
+  <div class="right-panel">
+    <div class="panel-section">
+      <h3>System</h3>
+      <div class="stat-row">
+        <span class="label">Uptime</span>
+        <span class="value" id="stat-uptime">--</span>
+      </div>
+      <div class="stat-row">
+        <span class="label">Sessions</span>
+        <span class="value" id="stat-sessions">0</span>
+      </div>
+      <div class="stat-row">
+        <span class="label">Memory</span>
+        <span class="value" id="stat-memory">0 entries</span>
+      </div>
+      <div class="stat-row">
+        <span class="label">Model</span>
+        <span class="value" id="stat-model">claude-opus-4-6</span>
+      </div>
+    </div>
+
+    <div class="panel-section">
+      <h3>Channels</h3>
+      <div id="channel-list"></div>
+    </div>
+
+    <div class="panel-section">
+      <h3>Scheduled Tasks</h3>
+      <div id="task-list">
+        <div style="font-size:12px;color:var(--text-muted)">No tasks scheduled</div>
+      </div>
+    </div>
+
+    <div class="panel-section">
+      <h3>Skills</h3>
+      <div id="skill-list">
+        <div style="font-size:12px;color:var(--text-muted)">Loading...</div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const WS_URL = `ws://${location.hostname || '127.0.0.1'}:${location.port || '18789'}`;
+    const API_URL = `http://${location.hostname || '127.0.0.1'}:${location.port || '18789'}`;
+    let ws;
+    let reconnectTimer;
+    const userId = 'webchat-' + Math.random().toString(36).slice(2, 8);
+
+    // ── WebSocket Connection ───────────────
+
+    function connect() {
+      ws = new WebSocket(WS_URL);
+
+      ws.onopen = () => {
+        document.getElementById('connection-status').textContent = 'Connected';
+        document.getElementById('connection-status').classList.remove('error');
+        ws.send(JSON.stringify({ type: 'system.status' }));
+      };
+
+      ws.onmessage = (event) => {
+        const msg = JSON.parse(event.data);
+        handleEvent(msg);
+      };
+
+      ws.onclose = () => {
+        document.getElementById('connection-status').textContent = 'Disconnected';
+        document.getElementById('connection-status').classList.add('error');
+        reconnectTimer = setTimeout(connect, 3000);
+      };
+
+      ws.onerror = () => {
+        document.getElementById('connection-status').textContent = 'Error';
+        document.getElementById('connection-status').classList.add('error');
+      };
+    }
+
+    function handleEvent(event) {
+      switch (event.type) {
+        case 'agent.response':
+          hideTyping();
+          addMessage('assistant', event.data.content);
+          break;
+        case 'agent.thinking':
+          showTyping();
+          break;
+        case 'agent.error':
+          hideTyping();
+          addMessage('assistant', `Error: ${event.data.error}`);
+          break;
+        case 'system.status':
+          updateStatus(event.data);
+          break;
+      }
+    }
+
+    // ── Messages ───────────────────────────
+
+    function sendMessage() {
+      const input = document.getElementById('message-input');
+      const content = input.value.trim();
+      if (!content) return;
+
+      addMessage('user', content);
+      input.value = '';
+      showTyping();
+
+      // Send via HTTP API (more reliable for request/response)
+      fetch(`${API_URL}/api/message`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content, senderId: userId, senderName: 'You' }),
+      })
+        .then(res => res.json())
+        .then(data => {
+          hideTyping();
+          if (data.response) addMessage('assistant', data.response);
+          if (data.sessionId) {
+            document.getElementById('session-id').textContent = `Session: ${data.sessionId.slice(0, 8)}`;
+          }
+        })
+        .catch(err => {
+          hideTyping();
+          addMessage('assistant', `Connection error: ${err.message}`);
+        });
+    }
+
+    function sendCommand(cmd) {
+      document.getElementById('message-input').value = cmd;
+      sendMessage();
+    }
+
+    function addMessage(role, content) {
+      const area = document.getElementById('chat-area');
+      const div = document.createElement('div');
+      div.className = `message ${role}`;
+      div.textContent = content;
+
+      const meta = document.createElement('div');
+      meta.className = 'meta';
+      meta.textContent = role === 'user' ? 'You' : 'Claude';
+      meta.textContent += ' · ' + new Date().toLocaleTimeString();
+      div.appendChild(meta);
+
+      area.appendChild(div);
+      area.scrollTop = area.scrollHeight;
+    }
+
+    function showTyping() {
+      document.getElementById('typing').classList.add('visible');
+    }
+
+    function hideTyping() {
+      document.getElementById('typing').classList.remove('visible');
+    }
+
+    // ── Status Updates ─────────────────────
+
+    function updateStatus(status) {
+      if (status.uptime) {
+        const secs = Math.floor(status.uptime / 1000);
+        const mins = Math.floor(secs / 60);
+        const hrs = Math.floor(mins / 60);
+        document.getElementById('stat-uptime').textContent =
+          hrs > 0 ? `${hrs}h ${mins % 60}m` : `${mins}m ${secs % 60}s`;
+      }
+
+      if (status.agents) {
+        let totalSessions = 0;
+        status.agents.forEach(a => totalSessions += a.sessions);
+        document.getElementById('stat-sessions').textContent = totalSessions;
+      }
+
+      if (status.channels) {
+        const list = document.getElementById('channel-list');
+        list.innerHTML = '';
+        status.channels.forEach(ch => {
+          const div = document.createElement('div');
+          div.className = 'channel-item';
+          div.innerHTML = `
+            <span class="indicator ${ch.status === 'connected' ? 'online' : 'offline'}"></span>
+            <span>${ch.type}</span>
+            <span style="color:var(--text-muted);font-size:11px;margin-left:auto">${ch.status}</span>
+          `;
+          list.appendChild(div);
+        });
+      }
+    }
+
+    // Periodically fetch status
+    setInterval(() => {
+      fetch(`${API_URL}/api/status`)
+        .then(res => res.json())
+        .then(updateStatus)
+        .catch(() => {});
+    }, 10000);
+
+    // Fetch skills
+    fetch(`${API_URL}/api/skills`)
+      .then(res => res.json())
+      .then(skills => {
+        const list = document.getElementById('skill-list');
+        if (skills.length === 0) {
+          list.innerHTML = '<div style="font-size:12px;color:var(--text-muted)">No skills installed</div>';
+          return;
+        }
+        list.innerHTML = '';
+        skills.forEach(s => {
+          const div = document.createElement('div');
+          div.className = 'task-item';
+          div.innerHTML = `<div class="task-name">${s.name}</div><div class="task-cron">${s.description || ''}</div>`;
+          list.appendChild(div);
+        });
+      })
+      .catch(() => {});
+
+    // ── Input Handling ─────────────────────
+
+    document.getElementById('message-input').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        sendMessage();
+      }
+    });
+
+    // Connect
+    connect();
+  </script>
+</body>
+</html>

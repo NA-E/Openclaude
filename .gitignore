@@ -1,0 +1,11 @@
+node_modules/
+dist/
+.env
+*.log
+.DS_Store
+coverage/
+.turbo/
+ui/dashboard/node_modules/
+ui/dashboard/dist/
+~/.openclaude/
+*.tgz
