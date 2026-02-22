@@ -9,3 +9,4 @@ ui/dashboard/node_modules/
 ui/dashboard/dist/
 ~/.openclaude/
 *.tgz
+tsconfig.tsbuildinfo
