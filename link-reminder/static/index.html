@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Reminders</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: #0f0f0f;
+      color: #e0e0e0;
+      font-family: system-ui, -apple-system, sans-serif;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+    }
+
+    .container {
+      width: 100%;
+      max-width: 600px;
+    }
+
+    h1 {
+      font-size: 1rem;
+      font-weight: 500;
+      color: #666;
+      margin-bottom: 20px;
+      letter-spacing: 0.02em;
+    }
+
+    .input-area {
+      background: #1a1a1a;
+      border: 1px solid #2a2a2a;
+      border-radius: 12px;
+      padding: 16px;
+      display: flex;
+      gap: 10px;
+      align-items: flex-end;
+    }
+
+    textarea {
+      flex: 1;
+      background: transparent;
+      border: none;
+      outline: none;
+      color: #e0e0e0;
+      font-size: 0.95rem;
+      line-height: 1.5;
+      resize: none;
+      min-height: 48px;
+      max-height: 160px;
+      font-family: inherit;
+    }
+
+    textarea::placeholder { color: #444; }
+
+    button#send {
+      background: #2a2a2a;
+      border: 1px solid #333;
+      border-radius: 8px;
+      color: #ccc;
+      cursor: pointer;
+      padding: 10px 16px;
+      font-size: 0.85rem;
+      white-space: nowrap;
+      transition: background 0.15s;
+      flex-shrink: 0;
+    }
+
+    button#send:hover { background: #333; }
+    button#send:disabled { opacity: 0.4; cursor: default; }
+
+    .status {
+      margin-top: 14px;
+      font-size: 0.85rem;
+      min-height: 20px;
+      transition: opacity 0.3s;
+    }
+
+    .status.ok { color: #4caf50; }
+    .status.err { color: #f44336; }
+    .status.saving { color: #888; }
+
+    .hint {
+      margin-top: 28px;
+      color: #333;
+      font-size: 0.78rem;
+      line-height: 1.7;
+    }
+
+    .hint code {
+      background: #1a1a1a;
+      padding: 1px 5px;
+      border-radius: 4px;
+      color: #555;
+      font-size: 0.85em;
+    }
+
+    a.view-pending {
+      display: inline-block;
+      margin-top: 20px;
+      color: #4ea1f3;
+      font-size: 0.85rem;
+      text-decoration: none;
+    }
+    a.view-pending:hover { text-decoration: underline; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>what do you want to remember?</h1>
+
+    <div class="input-area">
+      <textarea
+        id="msg"
+        placeholder="remember this https://... and remind me when I sit down"
+        rows="2"
+        autofocus
+      ></textarea>
+      <button id="send" onclick="save()">Save</button>
+    </div>
+
+    <div class="status" id="status"></div>
+
+    <div class="hint">
+      Just type naturally. Examples:<br>
+      <code>remember https://example.com check this out later</code><br>
+      <code>save this link https://... for when I get back</code><br>
+      <code>remind me about https://... research this</code>
+    </div>
+
+    <a href="/pending" class="view-pending">view pending reminders &rarr;</a>
+  </div>
+
+  <script>
+    const textarea = document.getElementById('msg');
+    const btn = document.getElementById('send');
+    const status = document.getElementById('status');
+
+    // Auto-resize textarea
+    textarea.addEventListener('input', () => {
+      textarea.style.height = 'auto';
+      textarea.style.height = Math.min(textarea.scrollHeight, 160) + 'px';
+    });
+
+    // Submit on Ctrl+Enter or Cmd+Enter
+    textarea.addEventListener('keydown', (e) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+        e.preventDefault();
+        save();
+      }
+    });
+
+    async function save() {
+      const message = textarea.value.trim();
+      if (!message) return;
+
+      btn.disabled = true;
+      setStatus('saving', 'Saving...');
+
+      try {
+        const res = await fetch('/remind', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ message }),
+        });
+
+        const data = await res.json();
+
+        if (res.ok) {
+          const note = data.note || '(no note)';
+          const url = data.url ? `\u2014 ${data.url}` : '';
+          setStatus('ok', `Saved: "${note}" ${url}`);
+          textarea.value = '';
+          textarea.style.height = 'auto';
+        } else {
+          setStatus('err', data.error || 'Something went wrong.');
+        }
+      } catch (err) {
+        setStatus('err', 'Could not reach server. Is server.py running?');
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    function setStatus(type, text) {
+      status.className = 'status ' + type;
+      status.textContent = text;
+    }
+  </script>
+</body>
+</html>
