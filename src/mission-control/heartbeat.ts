@@ -24,6 +24,8 @@ export class HeartbeatSystem {
   private memoryStack: AgentMemoryStack;
   private cronJobs: Map<string, Cron> = new Map();
   private running = false;
+  private activeHeartbeats = 0;
+  private readonly MAX_CONCURRENT_HEARTBEATS = 2;
 
   constructor(db: MissionControlDB, orchestrator: AgentOrchestrator, memoryStack: AgentMemoryStack) {
     this.db = db;
@@ -61,7 +63,14 @@ export class HeartbeatSystem {
   }
 
   private async executeHeartbeat(agent: MCAgent) {
+    if (this.activeHeartbeats >= this.MAX_CONCURRENT_HEARTBEATS) {
+      logger.warn('Heartbeat', `Heartbeat skipped for ${agent.name} — max concurrent limit reached`);
+      return;
+    }
+
     logger.info('Heartbeat', `${agent.name} waking up...`);
+
+    this.activeHeartbeats++;
 
     // Update agent status
     this.db.updateAgent(agent.id, { status: 'active', lastHeartbeat: new Date().toISOString() });
@@ -114,6 +123,7 @@ export class HeartbeatSystem {
     } catch (err) {
       logger.error('Heartbeat', `${agent.name} heartbeat failed`, err);
     } finally {
+      this.activeHeartbeats--;
       // Return to idle
       this.db.updateAgent(agent.id, { status: 'idle' });
     }

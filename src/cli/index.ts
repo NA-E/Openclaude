@@ -36,7 +36,7 @@ program
   .command('start')
   .description('Start the OpenClaude Gateway and all services')
   .option('--port <port>', 'Gateway port', '18789')
-  .option('--host <host>', 'Gateway host', '127.0.0.1')
+  .option('--host <host>', 'Gateway host')  // no default — let env/config decide
   .option('--no-scheduler', 'Disable task scheduler')
   .action(async (opts) => {
     console.log(chalk.cyan(`
@@ -49,14 +49,14 @@ program
     `));
 
     const config = loadConfig({
-      gateway: { host: opts.host, port: parseInt(opts.port), secret: '' },
+      gateway: {
+        ...(opts.host !== undefined && { host: opts.host }),
+        port: parseInt(opts.port),
+        secret: '',
+      },
     });
 
-    if (!process.env.ANTHROPIC_API_KEY) {
-      console.error(chalk.red('Error: ANTHROPIC_API_KEY not set.'));
-      console.log(chalk.yellow('Run: openclaude setup'));
-      process.exit(1);
-    }
+    // No API key needed — uses OAuth via ~/.claude-acc1 + subprocess
 
     const gateway = new Gateway(config);
 

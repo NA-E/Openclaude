@@ -190,7 +190,25 @@ export type GatewayEvent =
   | { type: 'channel.status'; data: { channel: Channel } }
   | { type: 'scheduler.fired'; data: { task: ScheduledTask } }
   | { type: 'memory.updated'; data: { entry: MemoryEntry } }
-  | { type: 'system.status'; data: SystemStatus };
+  | { type: 'system.status'; data: SystemStatus }
+  // Worker events
+  | { type: 'worker.spawned'; data: WorkerEventData }
+  | { type: 'worker.killed'; data: WorkerEventData }
+  | { type: 'worker.step_started'; data: WorkerEventData & { stepNumber: number; taskTitle: string } }
+  | { type: 'worker.step_completed'; data: WorkerEventData & { stepNumber: number; output: string; durationMs: number; taskTitle: string } }
+  | { type: 'worker.needs_approval'; data: WorkerEventData & { approvalId: string; action: string; description: string; details: string; taskTitle: string } }
+  | { type: 'worker.approved'; data: WorkerEventData & { approvalId: string; resolution: string } }
+  | { type: 'worker.rejected'; data: WorkerEventData & { approvalId: string; resolution: string } }
+  | { type: 'worker.done'; data: WorkerEventData & { taskTitle: string } }
+  | { type: 'worker.error'; data: WorkerEventData & { error: string; taskTitle: string } }
+  | { type: 'worker.output'; data: { workerId: string; projectName: string; accountId: string; chunk: string } };
+
+export interface WorkerEventData {
+  workerId: string;
+  accountId: string;
+  projectName: string;
+  state: string;
+}
 
 export interface SystemStatus {
   uptime: number;
@@ -198,6 +216,10 @@ export interface SystemStatus {
   channels: { type: ChannelType; status: string }[];
   scheduledTasks: number;
   memoryEntries: number;
+  currentModel?: string;
+  currentAccount?: string;
+  activeWorkers?: number;
+  pendingApprovals?: number;
 }
 
 // ─── Configuration ─────────────────────────────────────────────────

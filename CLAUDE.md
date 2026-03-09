@@ -300,7 +300,7 @@ This matches OpenClaw's architecture exactly.
 |----------|----------|---------|---------|
 | `ANTHROPIC_API_KEY` | Yes (runtime) | — | Claude API access |
 | `CLAUDE_MODEL` | No | `claude-opus-4-6` | Default model |
-| `GATEWAY_HOST` | No | `127.0.0.1` | Gateway bind address |
+| `GATEWAY_HOST` | No | `0.0.0.0` | Gateway bind address |
 | `GATEWAY_PORT` | No | `18789` | Gateway port |
 | `GATEWAY_SECRET` | No | `change-me` | API auth secret |
 | `DM_POLICY` | No | `pairing` | DM security: `pairing` or `open` |
@@ -327,6 +327,42 @@ These are areas identified for future development:
 - **WebSocket-based real-time updates** for Mission Control UI (currently polls)
 - **Session persistence to disk** (sessions are in-memory only)
 - **Agent config files** (loading from `~/.openclaude/agents/*.json`)
+
+## Auth — No API Key (OAuth Subprocess Mode)
+
+This project was modified to run **without an Anthropic API key** using Claude Code's own OAuth credentials.
+
+### How It Works
+- `src/agent/subprocess-client.ts` — replaces the Anthropic SDK. Spawns `claude -p --output-format=json` as a subprocess using `~/.claude-acc1` credentials.
+- `src/auth/token-provider.ts` — reads/refreshes OAuth tokens from `~/.claude-acc1/.credentials.json`. Token refresh endpoint: `https://platform.claude.com/v1/oauth/token`. Client ID: `9d1c250a-e61b-44d9-88ed-5944d1962f5e` (confirmed from claude binary).
+- `src/cli/index.ts` — `ANTHROPIC_API_KEY` check removed. No API key needed to start.
+
+### Subprocess Rules (Critical)
+- **Must delete** `CLAUDECODE` env var before spawning — otherwise errors "nested session"
+- **Must delete** `ANTHROPIC_API_KEY` env var before spawning — prevents SDK conflicts
+- **Use** `stdio: ['ignore', 'pipe', 'pipe']` — stdin=ignore prevents permission prompts from hanging
+- **Do NOT use** `--dangerously-skip-permissions` — hangs indefinitely when stdin is closed
+- **Account**: `~/.claude-acc1` hardcoded in `subprocess-client.ts`. To switch accounts, update `CLAUDE_CONFIG_DIR` there.
+
+### Start Command
+```bash
+npx tsx src/cli/index.ts start
+# NOT: npm run dev  (that shows help only — doesn't pass the 'start' subcommand)
+```
+
+### Current Limitations
+- **No tool_use / Mission Control autonomous actions** — subprocess returns text only. Agents chat but don't autonomously execute MC tasks.
+- **Future**: Expose MC tools as MCP server → pass `--mcp-config` to subprocess → full Mission Control support.
+
+### .env (minimal)
+```
+CLAUDE_MODEL=claude-sonnet-4-6
+GATEWAY_PORT=18789
+SANDBOX_MODE=true
+HEARTBEAT_CRON=0 * * * *
+```
+
+---
 
 ## Coding Conventions
 

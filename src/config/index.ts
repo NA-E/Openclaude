@@ -3,14 +3,14 @@ import { resolve } from 'path';
 import { homedir } from 'os';
 import type { OpenClaudeConfig } from '../types/index.js';
 
-dotenvConfig();
+dotenvConfig({ override: true }); // .env is the source of truth; overrides any stale PM2-cached env
 
 const home = homedir();
 
 export function loadConfig(overrides?: Partial<OpenClaudeConfig>): OpenClaudeConfig {
   const defaults: OpenClaudeConfig = {
     gateway: {
-      host: process.env.GATEWAY_HOST || '127.0.0.1',
+      host: process.env.GATEWAY_HOST || '0.0.0.0',
       port: parseInt(process.env.GATEWAY_PORT || '18789', 10),
       secret: process.env.GATEWAY_SECRET || 'change-me',
     },

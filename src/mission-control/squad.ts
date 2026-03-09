@@ -27,10 +27,10 @@ export interface SquadMember {
 
 /**
  * The 10-agent squad, directly from the article.
- * Heartbeats are staggered:
- *   :00 Pepper, :02 Shuri, :04 Friday, :06 Loki,
- *   :07 Wanda, :08 Vision, :10 Fury, :12 Quill
- *   :13 Wong, :14 Jarvis (lead checks last)
+ * Heartbeats are staggered once per hour, one agent every 6 minutes:
+ *   :00 Pepper, :06 Shuri, :12 Friday, :18 Loki,
+ *   :24 Wanda, :30 Vision, :36 Fury, :42 Quill
+ *   :48 Wong, :54 Jarvis (lead checks last)
  */
 export const SQUAD_ROSTER: SquadMember[] = [
   {
@@ -40,7 +40,7 @@ export const SQUAD_ROSTER: SquadMember[] = [
     level: 'lead',
     avatar: 'J',
     skills: ['coordination', 'delegation', 'monitoring', 'all-tools'],
-    heartbeatCron: '14,29,44,59 * * * *',
+    heartbeatCron: '54 * * * *',
     personality: 'The coordinator. Handles direct requests, delegates, monitors progress. Primary interface with the user.',
   },
   {
@@ -50,7 +50,7 @@ export const SQUAD_ROSTER: SquadMember[] = [
     level: 'specialist',
     avatar: 'S',
     skills: ['testing', 'ux-analysis', 'competitive-analysis', 'bug-hunting'],
-    heartbeatCron: '2,17,32,47 * * * *',
+    heartbeatCron: '6 * * * *',
     personality: 'Skeptical tester. Thorough bug hunter. Finds edge cases. Thinks like a first-time user. Questions everything.',
   },
   {
@@ -60,7 +60,7 @@ export const SQUAD_ROSTER: SquadMember[] = [
     level: 'specialist',
     avatar: 'F',
     skills: ['research', 'customer-insights', 'competitive-intel', 'data-analysis'],
-    heartbeatCron: '10,25,40,55 * * * *',
+    heartbeatCron: '36 * * * *',
     personality: 'Deep researcher. Reads G2 reviews for fun. Every claim comes with receipts. Sources and confidence levels always included.',
   },
   {
@@ -70,7 +70,7 @@ export const SQUAD_ROSTER: SquadMember[] = [
     level: 'specialist',
     avatar: 'V',
     skills: ['seo', 'keyword-research', 'content-strategy', 'analytics'],
-    heartbeatCron: '8,23,38,53 * * * *',
+    heartbeatCron: '30 * * * *',
     personality: 'Thinks in keywords and search intent. Makes sure content can actually rank. Data-driven optimization.',
   },
   {
@@ -80,7 +80,7 @@ export const SQUAD_ROSTER: SquadMember[] = [
     level: 'specialist',
     avatar: 'L',
     skills: ['writing', 'editing', 'copywriting', 'storytelling'],
-    heartbeatCron: '6,21,36,51 * * * *',
+    heartbeatCron: '18 * * * *',
     personality: 'Words are his craft. Pro-Oxford comma. Anti-passive voice. Every sentence earns its place or gets cut.',
   },
   {
@@ -90,7 +90,7 @@ export const SQUAD_ROSTER: SquadMember[] = [
     level: 'specialist',
     avatar: 'Q',
     skills: ['social-media', 'hooks', 'engagement', 'build-in-public'],
-    heartbeatCron: '12,27,42,57 * * * *',
+    heartbeatCron: '42 * * * *',
     personality: 'Thinks in hooks and threads. Build-in-public mindset. Knows what makes people stop scrolling.',
   },
   {
@@ -100,7 +100,7 @@ export const SQUAD_ROSTER: SquadMember[] = [
     level: 'specialist',
     avatar: 'W',
     skills: ['design', 'infographics', 'ui-mockups', 'visual-thinking'],
-    heartbeatCron: '7,22,37,52 * * * *',
+    heartbeatCron: '24 * * * *',
     personality: 'Visual thinker. Infographics, comparison graphics, UI mockups. Makes complex things visually clear.',
   },
   {
@@ -110,7 +110,7 @@ export const SQUAD_ROSTER: SquadMember[] = [
     level: 'specialist',
     avatar: 'P',
     skills: ['email-marketing', 'drip-sequences', 'lifecycle', 'copywriting'],
-    heartbeatCron: '0,15,30,45 * * * *',
+    heartbeatCron: '0 * * * *',
     personality: 'Drip sequences and lifecycle emails. Every email earns its place or gets cut. Conversion-focused.',
   },
   {
@@ -120,7 +120,7 @@ export const SQUAD_ROSTER: SquadMember[] = [
     level: 'specialist',
     avatar: 'Fr',
     skills: ['coding', 'testing', 'debugging', 'architecture'],
-    heartbeatCron: '4,19,34,49 * * * *',
+    heartbeatCron: '12 * * * *',
     personality: 'Code is poetry. Clean, tested, documented. Solves problems with elegant implementations.',
   },
   {
@@ -130,7 +130,7 @@ export const SQUAD_ROSTER: SquadMember[] = [
     level: 'specialist',
     avatar: 'Wo',
     skills: ['documentation', 'organization', 'knowledge-management'],
-    heartbeatCron: '13,28,43,58 * * * *',
+    heartbeatCron: '48 * * * *',
     personality: 'Keeps docs organized. Makes sure nothing gets lost. If it isn\'t documented, it didn\'t happen.',
   },
 ];

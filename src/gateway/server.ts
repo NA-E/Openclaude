@@ -33,6 +33,13 @@ import { AgentMemoryStack } from '../mission-control/memory-stack.js';
 import { NotificationDaemon } from '../notifications/daemon.js';
 import { DailyStandupGenerator } from '../standup/generator.js';
 import { resolve } from 'path';
+import { detectAccounts, getCurrentAccountId, setAccount } from '../agent/subprocess-client.js';
+import { ProjectManager } from '../projects/manager.js';
+import { WorkerPool } from '../workers/pool.js';
+import { WorkerStore } from '../workers/store.js';
+import { WorkerOrchestrator } from '../workers/orchestrator.js';
+import { homedir } from 'os';
+import type { WorkerSummary, ApprovalRequest } from '../workers/types.js';
 
 export class Gateway {
   private app: Express;
@@ -54,8 +61,15 @@ export class Gateway {
   public memoryStack: AgentMemoryStack;
   public notificationDaemon: NotificationDaemon;
   public standupGenerator: DailyStandupGenerator;
+  public projectManager: ProjectManager;
+
+  // Worker subsystems (Master-Worker)
+  public workerStore: WorkerStore;
+  public workerPool: WorkerPool;
+  public workerOrchestrator: WorkerOrchestrator;
 
   private startTime: number = Date.now();
+  private activeProject: string | null = null;
 
   constructor(config: OpenClaudeConfig) {
     this.config = config;
@@ -71,6 +85,24 @@ export class Gateway {
     this.orchestrator = new AgentOrchestrator(config, this.memory, this.skills);
     this.router = new ChannelRouter(config, this.handleInbound.bind(this));
     this.scheduler = new TaskScheduler(config, this.orchestrator, this);
+
+    // Initialize project manager (scans parent directory for project folders)
+    const projectsRoot = process.env.PROJECTS_ROOT || resolve(process.cwd(), '..');
+    this.projectManager = new ProjectManager(projectsRoot);
+
+    // Initialize Master-Worker subsystems
+    const workerDataDir = resolve(homedir(), '.openclaude', 'workers');
+    this.workerStore = new WorkerStore(workerDataDir);
+    this.workerPool = new WorkerPool(this.workerStore);
+    this.workerOrchestrator = new WorkerOrchestrator(this.workerPool);
+
+    // Forward worker pool events to WebSocket clients
+    this.workerPool.on('worker.event', (event: { type: string; data: unknown }) => {
+      this.broadcast({ type: event.type as GatewayEvent['type'], data: event.data } as GatewayEvent);
+    });
+    this.workerPool.on('worker.output', (data: { workerId: string; projectName: string; accountId: string; chunk: string }) => {
+      this.broadcast({ type: 'worker.output', data });
+    });
 
     // Initialize Mission Control subsystems
     const mcDataDir = resolve(config.workspace, '..', 'mission-control');
@@ -134,7 +166,7 @@ export class Gateway {
     }
   }
 
-  public broadcast(event: GatewayEvent) {
+  public broadcast(event: GatewayEvent | { type: string; data: unknown }) {
     const payload = JSON.stringify(event);
     for (const [, ws] of this.clients) {
       if (ws.readyState === WebSocket.OPEN) {
@@ -211,6 +243,15 @@ export class Gateway {
   // ─── HTTP Routes ──────────────────────────────────────────────
 
   private setupHTTPRoutes() {
+    // Static UI serving
+    const uiDir = resolve(process.cwd(), 'ui');
+    this.app.get('/dashboard', (_req, res) => {
+      res.sendFile(resolve(uiDir, 'dashboard', 'index.html'));
+    });
+    this.app.get('/mission-control', (_req, res) => {
+      res.sendFile(resolve(uiDir, 'mission-control', 'index.html'));
+    });
+
     // Health check
     this.app.get('/health', (_req, res) => {
       res.json({ status: 'ok', uptime: Date.now() - this.startTime });
@@ -299,6 +340,226 @@ export class Gateway {
     // Channels
     this.app.get('/api/channels', (_req, res) => {
       res.json(this.router.getChannelStatuses());
+    });
+
+    // Runtime config (model + account switching)
+    this.app.get('/api/runtime', (_req, res) => {
+      const accounts = detectAccounts();
+      const currentAccount = getCurrentAccountId();
+      const currentModel = this.config.agent.defaultModel;
+      const availableModels = [
+        { id: 'claude-sonnet-4-6', name: 'Sonnet 4.6', description: 'Fast, balanced' },
+        { id: 'claude-opus-4-6', name: 'Opus 4.6', description: 'Most capable' },
+        { id: 'claude-haiku-4-5', name: 'Haiku 4.5', description: 'Fastest, cheapest' },
+      ];
+      res.json({ currentAccount, currentModel, accounts, availableModels });
+    });
+
+    this.app.post('/api/runtime', (req, res) => {
+      const { account, model } = req.body;
+      const changes: string[] = [];
+
+      if (account && account !== getCurrentAccountId()) {
+        try {
+          setAccount(account);
+          changes.push(`account → ${account}`);
+        } catch (err) {
+          return res.status(400).json({ error: err instanceof Error ? err.message : 'Failed to switch account' });
+        }
+      }
+
+      if (model && model !== this.config.agent.defaultModel) {
+        this.config.agent.defaultModel = model;
+        changes.push(`model → ${model}`);
+        logger.info('Gateway', `Model switched to: ${model}`);
+      }
+
+      if (changes.length === 0) {
+        return res.json({ message: 'No changes', currentAccount: getCurrentAccountId(), currentModel: this.config.agent.defaultModel });
+      }
+
+      // Broadcast the change to all connected WS clients
+      this.broadcast({
+        type: 'system.status',
+        data: this.getStatus(),
+      });
+
+      res.json({
+        message: `Switched: ${changes.join(', ')}`,
+        currentAccount: getCurrentAccountId(),
+        currentModel: this.config.agent.defaultModel,
+      });
+    });
+
+    // Projects — list all detected projects with account assignments
+    this.app.get('/api/projects', (_req, res) => {
+      const projects = this.projectManager.listProjects();
+      res.json({ projects, activeProject: this.activeProject });
+    });
+
+    // Assign account to a project
+    this.app.post('/api/projects/:name/account', (req, res) => {
+      const { name } = req.params;
+      const { account } = req.body;  // account ID or null to clear
+      this.projectManager.assignAccount(name, account || null);
+      res.json({ project: name, account: account || null });
+    });
+
+    // ─── Workers (Master-Worker) ───────────────────────────────
+
+    // List all active workers
+    this.app.get('/api/workers', (_req, res) => {
+      const workers: WorkerSummary[] = this.workerPool.listWorkers();
+      const approvals: ApprovalRequest[] = this.workerPool.getPendingApprovals();
+      res.json({ workers, pendingApprovals: approvals });
+    });
+
+    // Spawn a worker for a project (no task yet)
+    this.app.post('/api/workers', (req, res) => {
+      const { projectName, projectPath, account } = req.body;
+      if (!projectName || !projectPath) {
+        return res.status(400).json({ error: 'projectName and projectPath required' });
+      }
+      const config = this.workerPool.createWorker(projectName, projectPath, account);
+      if (!config) {
+        return res.status(503).json({ error: 'No worker accounts available (acc2/acc3 both busy)' });
+      }
+      res.json(config);
+    });
+
+    // Dispatch a task to an existing worker (or spawn + dispatch in one call)
+    this.app.post('/api/workers/dispatch', async (req, res) => {
+      const { projectName, projectPath, title, description, account, mcTaskId } = req.body;
+      if (!projectName || !projectPath || !title || !description) {
+        return res.status(400).json({ error: 'projectName, projectPath, title, description required' });
+      }
+
+      const config = this.workerPool.createWorker(projectName, projectPath, account);
+      if (!config) {
+        return res.status(503).json({ error: 'No worker accounts available (acc2/acc3 both busy)' });
+      }
+
+      try {
+        const result = await this.workerOrchestrator.dispatch(
+          config.id, title, description, projectName, mcTaskId,
+        );
+        res.json({
+          workerId: config.id,
+          accountId: config.accountId,
+          task: result.task,
+          step: result.step,
+          signal: result.signal,
+        });
+      } catch (err) {
+        res.status(500).json({ error: err instanceof Error ? err.message : 'Dispatch failed' });
+      }
+    });
+
+    // Continue a worker with a follow-up instruction
+    this.app.post('/api/workers/:id/continue', async (req, res) => {
+      const entry = this.workerPool.getWorkerEntry(req.params.id);
+      if (!entry) return res.status(404).json({ error: 'Worker not found' });
+
+      const { instruction } = req.body;
+      if (!instruction) return res.status(400).json({ error: 'instruction required' });
+
+      const lastStep = (entry.task?.steps || []).at(-1);
+      const previousOutput = lastStep?.output || '';
+
+      try {
+        const result = await this.workerOrchestrator.continueWorker(
+          req.params.id,
+          previousOutput,
+          instruction,
+          entry.config.projectName,
+          entry.task?.title || 'Task',
+        );
+        res.json(result);
+      } catch (err) {
+        res.status(500).json({ error: err instanceof Error ? err.message : 'Continue failed' });
+      }
+    });
+
+    // Get worker logs
+    this.app.get('/api/workers/:id/logs', (req, res) => {
+      const steps = this.workerPool.getWorkerLogs(req.params.id);
+      res.json(steps);
+    });
+
+    // Kill a worker
+    this.app.delete('/api/workers/:id', (req, res) => {
+      this.workerPool.killWorker(req.params.id);
+      res.json({ killed: req.params.id });
+    });
+
+    // List pending approvals
+    this.app.get('/api/workers/approvals', (_req, res) => {
+      res.json(this.workerPool.getPendingApprovals());
+    });
+
+    // Approve
+    this.app.post('/api/workers/approvals/:approvalId/approve', async (req, res) => {
+      const { approvalId } = req.params;
+      const approvals = this.workerPool.getPendingApprovals();
+      const approval = approvals.find(a => a.id === approvalId);
+      if (!approval) return res.status(404).json({ error: 'Approval not found' });
+
+      const entry = this.workerPool.getWorkerEntry(approval.workerId);
+
+      try {
+        const result = await this.workerOrchestrator.proceedAfterApproval(
+          approval.workerId,
+          approvalId,
+          approval.action,
+          entry?.config.projectName || 'unknown',
+          entry?.task?.title || 'Task',
+        );
+        res.json(result);
+      } catch (err) {
+        res.status(500).json({ error: err instanceof Error ? err.message : 'Post-approval step failed' });
+      }
+    });
+
+    // Reject
+    this.app.post('/api/workers/approvals/:approvalId/reject', (req, res) => {
+      try {
+        const approval = this.workerPool.resolveApproval(req.params.approvalId, 'rejected');
+        res.json({ rejected: approval.id });
+      } catch (err) {
+        res.status(400).json({ error: err instanceof Error ? err.message : 'Reject failed' });
+      }
+    });
+
+    // Select active project — auto-switches account
+    this.app.post('/api/projects/:name/select', (req, res) => {
+      const { name } = req.params;
+      const projects = this.projectManager.listProjects();
+      const project = projects.find(p => p.name === name);
+      if (!project) {
+        return res.status(404).json({ error: `Project "${name}" not found` });
+      }
+
+      this.activeProject = name;
+      this.orchestrator.setProjectContext({ name: project.name, path: project.path });
+      const changes: string[] = [`project → ${name}`];
+
+      // Auto-switch account if project has one assigned
+      if (project.account && project.account !== getCurrentAccountId()) {
+        try {
+          setAccount(project.account);
+          changes.push(`account → ${project.account}`);
+        } catch (err) {
+          logger.warn('Gateway', `Failed to switch account for project ${name}: ${err}`);
+        }
+      }
+
+      this.broadcast({ type: 'system.status', data: this.getStatus() });
+
+      res.json({
+        message: `Activated: ${changes.join(', ')}`,
+        activeProject: name,
+        currentAccount: getCurrentAccountId(),
+      });
     });
   }
 
@@ -397,6 +658,7 @@ export class Gateway {
   // ─── Status ───────────────────────────────────────────────────
 
   public getStatus(): SystemStatus {
+    const workers = this.workerPool.listWorkers();
     return {
       uptime: Date.now() - this.startTime,
       agents: this.orchestrator.listAgents().map((a) => ({
@@ -411,6 +673,10 @@ export class Gateway {
       })),
       scheduledTasks: this.scheduler.listTasks().length,
       memoryEntries: 0,
+      currentModel: this.config.agent.defaultModel,
+      currentAccount: getCurrentAccountId(),
+      activeWorkers: workers.filter(w => w.state === 'running' || w.state === 'awaiting_review').length,
+      pendingApprovals: this.workerPool.getPendingApprovals().length,
     };
   }
 
@@ -451,10 +717,11 @@ export class Gateway {
     // Start scheduler
     this.scheduler.start();
 
-    // Start Mission Control subsystems
-    this.heartbeat.start();
+    // Mission Control subsystems — heartbeats DISABLED until usage-aware throttling is built
+    // this.heartbeat.start();
     this.notificationDaemon.start();
     this.standupGenerator.start();
+    logger.warn('Gateway', 'Heartbeats DISABLED — enable manually when ready');
 
     // Start HTTP + WS server
     const { host, port } = this.config.gateway;

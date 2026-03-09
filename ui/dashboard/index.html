@@ -93,6 +93,60 @@
       color: var(--text-muted);
     }
 
+    /* ── Projects List ──────────────────── */
+    .projects-list {
+      max-height: 240px;
+      overflow-y: auto;
+    }
+
+    .project-item {
+      padding: 8px 20px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      cursor: pointer;
+      font-size: 12px;
+      color: var(--text-muted);
+      transition: all 0.15s;
+    }
+    .project-item:hover { background: var(--surface2); color: var(--text); }
+    .project-item.active { background: var(--surface2); color: var(--accent-light); border-left: 2px solid var(--accent); }
+
+    .project-item .proj-name {
+      flex: 1;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .project-item .proj-acc {
+      font-size: 10px;
+      padding: 1px 5px;
+      border-radius: 3px;
+      background: rgba(108, 92, 231, 0.2);
+      color: var(--accent-light);
+      flex-shrink: 0;
+    }
+    .project-item .proj-acc.none {
+      background: rgba(136, 136, 160, 0.15);
+      color: var(--text-muted);
+    }
+
+    .project-search {
+      margin: 4px 16px 8px;
+      width: calc(100% - 32px);
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 6px 10px;
+      color: var(--text);
+      font-size: 11px;
+      font-family: inherit;
+      outline: none;
+    }
+    .project-search::placeholder { color: var(--text-muted); }
+    .project-search:focus { border-color: var(--accent); }
+
     /* ── Main Content ────────────────────── */
     .main {
       flex: 1;
@@ -280,6 +334,236 @@
 
     .task-item .task-name { font-weight: 500; }
     .task-item .task-cron { color: var(--text-muted); font-size: 11px; }
+
+    /* ── Runtime Switcher ──────────────── */
+    .runtime-select {
+      width: 100%;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 8px 10px;
+      color: var(--text);
+      font-size: 12px;
+      font-family: inherit;
+      outline: none;
+      cursor: pointer;
+      appearance: none;
+      -webkit-appearance: none;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%238888a0'/%3E%3C/svg%3E");
+      background-repeat: no-repeat;
+      background-position: right 10px center;
+      transition: border-color 0.15s;
+    }
+    .runtime-select:hover { border-color: var(--accent); }
+    .runtime-select:focus { border-color: var(--accent); }
+
+    .runtime-label {
+      font-size: 11px;
+      color: var(--text-muted);
+      margin-bottom: 4px;
+      margin-top: 10px;
+    }
+    .runtime-label:first-child { margin-top: 0; }
+
+    .runtime-info {
+      font-size: 11px;
+      color: var(--text-muted);
+      padding: 4px 0;
+    }
+    .runtime-info .runtime-value {
+      color: var(--accent-light);
+      font-weight: 500;
+    }
+
+    .switch-btn {
+      width: 100%;
+      background: var(--accent);
+      border: none;
+      border-radius: var(--radius);
+      padding: 8px 12px;
+      color: white;
+      font-size: 12px;
+      font-family: inherit;
+      cursor: pointer;
+      margin-top: 10px;
+      transition: opacity 0.15s;
+    }
+    .switch-btn:hover { opacity: 0.85; }
+    .switch-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+    .switch-toast {
+      position: fixed;
+      top: 16px;
+      right: 16px;
+      background: var(--surface2);
+      border: 1px solid var(--accent);
+      border-radius: var(--radius);
+      padding: 10px 16px;
+      font-size: 13px;
+      color: var(--accent-light);
+      z-index: 1000;
+      opacity: 0;
+      transform: translateY(-10px);
+      transition: all 0.3s;
+      pointer-events: none;
+    }
+    .switch-toast.visible {
+      opacity: 1;
+      transform: translateY(0);
+    }
+
+    /* ── Approval Banner ──────────────────── */
+    .approval-banner {
+      background: rgba(253, 203, 110, 0.08);
+      border-bottom: 2px solid var(--warning);
+      padding: 12px 24px;
+      flex-shrink: 0;
+      display: none;
+    }
+    .approval-inner {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .approval-icon { font-size: 16px; }
+    .approval-content { flex: 1; min-width: 0; }
+    .approval-title { font-size: 13px; font-weight: 600; color: var(--warning); }
+    .approval-details {
+      font-size: 11px;
+      color: var(--text-muted);
+      margin-top: 2px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .approval-actions { display: flex; gap: 8px; flex-shrink: 0; }
+    .approval-btn {
+      padding: 6px 14px;
+      border-radius: var(--radius);
+      border: none;
+      font-size: 12px;
+      font-family: inherit;
+      cursor: pointer;
+      transition: opacity 0.15s;
+      font-weight: 500;
+    }
+    .approval-btn:hover { opacity: 0.85; }
+    .approval-btn.approve { background: var(--success); color: #0a0a0f; }
+    .approval-btn.reject { background: rgba(255,118,117,0.15); color: var(--danger); border: 1px solid var(--danger); }
+
+    /* ── Worker Items ─────────────────────── */
+    .worker-item {
+      padding: 9px 10px;
+      background: var(--surface2);
+      border-radius: var(--radius);
+      margin-bottom: 6px;
+      font-size: 12px;
+      border-left: 3px solid var(--border);
+    }
+    .worker-item.running { border-left-color: var(--accent); }
+    .worker-item.awaiting_review { border-left-color: var(--accent-light); }
+    .worker-item.needs_approval { border-left-color: var(--warning); }
+    .worker-item.done { border-left-color: var(--success); opacity: 0.7; }
+    .worker-item.error { border-left-color: var(--danger); }
+
+    .worker-item-header { display: flex; align-items: center; gap: 6px; }
+    .worker-item-name { font-weight: 600; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .worker-state-badge {
+      font-size: 9px;
+      padding: 1px 5px;
+      border-radius: 3px;
+      background: rgba(136,136,160,0.2);
+      color: var(--text-muted);
+      flex-shrink: 0;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    .worker-state-badge.running { background: rgba(108,92,231,0.2); color: var(--accent-light); }
+    .worker-state-badge.awaiting_review { background: rgba(108,92,231,0.1); color: var(--accent-light); }
+    .worker-state-badge.needs_approval { background: rgba(253,203,110,0.2); color: var(--warning); }
+    .worker-state-badge.done { background: rgba(0,206,201,0.2); color: var(--success); }
+    .worker-state-badge.error { background: rgba(255,118,117,0.2); color: var(--danger); }
+
+    .worker-item-task {
+      color: var(--text-muted);
+      margin-top: 4px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-size: 11px;
+    }
+    .worker-item-acc { color: var(--text-muted); font-size: 10px; margin-top: 2px; }
+
+    .worker-output-feed {
+      margin-top: 6px;
+      font-size: 9px;
+      font-family: monospace;
+      color: #6a6a80;
+      background: var(--bg);
+      border-radius: 3px;
+      padding: 4px 6px;
+      max-height: 64px;
+      overflow-y: auto;
+      white-space: pre-wrap;
+      word-break: break-all;
+    }
+
+    .worker-item-actions { margin-top: 6px; display: flex; gap: 4px; }
+    .worker-action-btn {
+      padding: 2px 8px;
+      border-radius: 3px;
+      border: 1px solid var(--border);
+      background: transparent;
+      color: var(--text-muted);
+      font-size: 10px;
+      cursor: pointer;
+      font-family: inherit;
+      transition: all 0.15s;
+    }
+    .worker-action-btn:hover { color: var(--text); border-color: var(--accent); }
+    .worker-action-btn.danger:hover { color: var(--danger); border-color: var(--danger); }
+
+    /* ── Dispatch Modal ───────────────────── */
+    .modal-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.65);
+      z-index: 2000;
+      display: none;
+      align-items: center;
+      justify-content: center;
+    }
+    .modal-overlay.open { display: flex; }
+    .modal {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 24px;
+      width: 480px;
+      max-width: 90vw;
+    }
+    .modal h3 { font-size: 15px; margin-bottom: 18px; }
+    .runtime-input, .runtime-textarea {
+      width: 100%;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 8px 10px;
+      color: var(--text);
+      font-size: 12px;
+      font-family: inherit;
+      outline: none;
+      transition: border-color 0.15s;
+    }
+    .runtime-input:focus, .runtime-textarea:focus { border-color: var(--accent); }
+    .runtime-textarea { height: 80px; resize: vertical; }
+    .modal-btns { display: flex; gap: 8px; margin-top: 16px; }
+    .modal-cancel {
+      background: transparent;
+      border: 1px solid var(--border);
+      color: var(--text-muted);
+    }
+    .modal-cancel:hover { border-color: var(--accent); color: var(--text); }
   </style>
 </head>
 <body>
@@ -309,19 +593,24 @@
       Slack
     </div>
 
-    <div class="sidebar-section">Agents</div>
-    <div class="sidebar-item" id="agent-default">
-      <span class="indicator online"></span>
-      Claude (default)
+    <div class="sidebar-section">Projects</div>
+    <input type="text" class="project-search" id="project-search" placeholder="Filter projects..." />
+    <div class="projects-list" id="projects-list">
+      <div class="project-item" style="color:var(--text-muted);cursor:default;font-size:11px;padding-left:20px">Loading...</div>
     </div>
 
     <div class="sidebar-section">Quick Actions</div>
     <div class="sidebar-item" onclick="sendCommand('/status')">System Status</div>
     <div class="sidebar-item" onclick="sendCommand('/new')">New Session</div>
-    <div class="sidebar-item" onclick="sendCommand('/compact')">Compact History</div>
+    <div class="sidebar-item" onclick="openDispatchModal()">
+      <span style="color:var(--accent-light)">+</span>
+      Dispatch Worker Task
+      <span id="sidebar-approval-badge" style="display:none;margin-left:auto;background:var(--warning);color:#0a0a0f;font-size:9px;padding:1px 5px;border-radius:8px;font-weight:700"></span>
+    </div>
 
     <div class="sidebar-footer">
-      OpenClaude v0.1.0 | Gateway ws://127.0.0.1:18789
+      <span id="footer-project" style="color:var(--accent-light)">No project</span>
+      <br>OpenClaude v0.1.0
     </div>
   </div>
 
@@ -332,6 +621,21 @@
       <span class="status-badge" id="connection-status">Connecting...</span>
       <span style="flex:1"></span>
       <span style="font-size:12px;color:var(--text-muted)" id="session-id"></span>
+    </div>
+
+    <!-- Approval Banner (fixed at top when approval pending) -->
+    <div class="approval-banner" id="approval-banner">
+      <div class="approval-inner">
+        <div class="approval-icon">&#9889;</div>
+        <div class="approval-content">
+          <div class="approval-title" id="approval-title">Worker ready</div>
+          <div class="approval-details" id="approval-details">Awaiting your approval</div>
+        </div>
+        <div class="approval-actions">
+          <button class="approval-btn approve" id="approval-approve-btn" onclick="approveCurrentApproval()">Approve</button>
+          <button class="approval-btn reject" onclick="rejectCurrentApproval()">Reject</button>
+        </div>
+      </div>
     </div>
 
     <div class="chat-area" id="chat-area">
@@ -361,6 +665,55 @@ Send me a message or use commands like /status, /new, or /compact.
   <!-- Right Panel -->
   <div class="right-panel">
     <div class="panel-section">
+      <h3>Runtime</h3>
+
+      <div class="runtime-label">Account</div>
+      <select class="runtime-select" id="select-account">
+        <option value="acc1">acc1 (loading...)</option>
+      </select>
+
+      <div class="runtime-label">Model</div>
+      <select class="runtime-select" id="select-model">
+        <option value="claude-sonnet-4-6">Sonnet 4.6 - Fast</option>
+        <option value="claude-opus-4-6">Opus 4.6 - Capable</option>
+        <option value="claude-haiku-4-5">Haiku 4.5 - Fastest</option>
+      </select>
+
+      <button class="switch-btn" id="apply-runtime" disabled>Apply Changes</button>
+
+      <div class="runtime-info" style="margin-top:10px">
+        Active: <span class="runtime-value" id="rt-active-model">--</span>
+        on <span class="runtime-value" id="rt-active-account">--</span>
+      </div>
+      <div class="runtime-info">
+        Subscription: <span class="runtime-value" id="rt-subscription">--</span>
+      </div>
+      <div class="runtime-info">
+        Token expires: <span class="runtime-value" id="rt-token-expiry">--</span>
+      </div>
+    </div>
+
+    <div class="panel-section" id="project-config-section" style="display:none">
+      <h3>Project Config</h3>
+      <div class="runtime-info">
+        Project: <span class="runtime-value" id="pc-project-name">--</span>
+      </div>
+      <div class="runtime-label">Assigned Account</div>
+      <select class="runtime-select" id="pc-account">
+        <option value="">Use gateway default</option>
+      </select>
+      <button class="switch-btn" id="pc-save" style="margin-top:6px">Save Assignment</button>
+    </div>
+
+    <div class="panel-section">
+      <h3>Workers</h3>
+      <button class="switch-btn" onclick="openDispatchModal()" style="margin-bottom:10px">+ Dispatch Task</button>
+      <div id="worker-list">
+        <div style="font-size:12px;color:var(--text-muted)">No workers running</div>
+      </div>
+    </div>
+
+    <div class="panel-section">
       <h3>System</h3>
       <div class="stat-row">
         <span class="label">Uptime</span>
@@ -374,10 +727,6 @@ Send me a message or use commands like /status, /new, or /compact.
         <span class="label">Memory</span>
         <span class="value" id="stat-memory">0 entries</span>
       </div>
-      <div class="stat-row">
-        <span class="label">Model</span>
-        <span class="value" id="stat-model">claude-opus-4-6</span>
-      </div>
     </div>
 
     <div class="panel-section">
@@ -386,17 +735,39 @@ Send me a message or use commands like /status, /new, or /compact.
     </div>
 
     <div class="panel-section">
-      <h3>Scheduled Tasks</h3>
-      <div id="task-list">
-        <div style="font-size:12px;color:var(--text-muted)">No tasks scheduled</div>
-      </div>
-    </div>
-
-    <div class="panel-section">
       <h3>Skills</h3>
       <div id="skill-list">
         <div style="font-size:12px;color:var(--text-muted)">Loading...</div>
       </div>
+    </div>
+  </div>
+
+  <div class="switch-toast" id="switch-toast"></div>
+
+  <!-- Dispatch Modal -->
+  <div class="modal-overlay" id="dispatch-modal" onclick="closeDispatchModalOverlay(event)">
+    <div class="modal">
+      <h3>Dispatch Worker Task</h3>
+
+      <div class="runtime-label">Project</div>
+      <select class="runtime-select" id="dispatch-project"></select>
+
+      <div class="runtime-label" style="margin-top:10px">Account (optional)</div>
+      <select class="runtime-select" id="dispatch-account">
+        <option value="">Auto (acc2 / acc3)</option>
+      </select>
+
+      <div class="runtime-label" style="margin-top:10px">Task Title</div>
+      <input class="runtime-input" type="text" id="dispatch-title" placeholder="e.g. Fix authentication bug" />
+
+      <div class="runtime-label" style="margin-top:10px">Task Description</div>
+      <textarea class="runtime-textarea" id="dispatch-description" placeholder="Describe what the worker should do in detail. Include file names, acceptance criteria, and any context needed."></textarea>
+
+      <div class="modal-btns">
+        <button class="switch-btn" id="dispatch-submit-btn" onclick="submitDispatch()">Dispatch</button>
+        <button class="switch-btn modal-cancel" onclick="closeDispatchModal()">Cancel</button>
+      </div>
+      <div id="dispatch-status" style="font-size:11px;color:var(--text-muted);margin-top:10px"></div>
     </div>
   </div>
 
@@ -436,6 +807,10 @@ Send me a message or use commands like /status, /new, or /compact.
     }
 
     function handleEvent(event) {
+      if (event.type.startsWith('worker.')) {
+        handleWorkerEvent(event);
+        return;
+      }
       switch (event.type) {
         case 'agent.response':
           hideTyping();
@@ -545,6 +920,134 @@ Send me a message or use commands like /status, /new, or /compact.
           list.appendChild(div);
         });
       }
+
+      // Update active runtime display from status
+      if (status.currentModel) {
+        document.getElementById('rt-active-model').textContent = status.currentModel.replace('claude-', '');
+      }
+      if (status.currentAccount) {
+        document.getElementById('rt-active-account').textContent = status.currentAccount;
+      }
+
+      // Update worker counts
+      if (status.activeWorkers !== undefined) {
+        const el = document.getElementById('stat-workers');
+        if (el) el.textContent = status.activeWorkers;
+      }
+      if (status.pendingApprovals !== undefined && status.pendingApprovals > 0) {
+        const badge = document.getElementById('sidebar-approval-badge');
+        if (badge) { badge.textContent = status.pendingApprovals; badge.style.display = ''; }
+      }
+    }
+
+    // ── Runtime Switcher ────────────────────
+
+    let runtimeData = null;
+
+    function loadRuntime() {
+      fetch(`${API_URL}/api/runtime`)
+        .then(res => res.json())
+        .then(data => {
+          runtimeData = data;
+
+          // Populate account dropdown
+          const accSelect = document.getElementById('select-account');
+          accSelect.innerHTML = '';
+          data.accounts.forEach(acc => {
+            const opt = document.createElement('option');
+            opt.value = acc.id;
+            const expiry = new Date(acc.expiresAt);
+            const isExpired = acc.expiresAt < Date.now();
+            opt.textContent = `${acc.id} (${acc.subscriptionType}${isExpired ? ' - EXPIRED' : ''})`;
+            accSelect.appendChild(opt);
+          });
+          accSelect.value = data.currentAccount;
+
+          // Set model dropdown
+          const modelSelect = document.getElementById('select-model');
+          modelSelect.value = data.currentModel;
+
+          // Update active display
+          document.getElementById('rt-active-model').textContent = data.currentModel.replace('claude-', '');
+          document.getElementById('rt-active-account').textContent = data.currentAccount;
+
+          // Show subscription + token info for current account
+          const currentAcc = data.accounts.find(a => a.id === data.currentAccount);
+          if (currentAcc) {
+            document.getElementById('rt-subscription').textContent = currentAcc.subscriptionType;
+            const exp = new Date(currentAcc.expiresAt);
+            const now = Date.now();
+            if (currentAcc.expiresAt < now) {
+              document.getElementById('rt-token-expiry').textContent = 'EXPIRED';
+              document.getElementById('rt-token-expiry').style.color = 'var(--danger)';
+            } else {
+              const hoursLeft = Math.round((currentAcc.expiresAt - now) / 3600000 * 10) / 10;
+              document.getElementById('rt-token-expiry').textContent = `${hoursLeft}h remaining`;
+              document.getElementById('rt-token-expiry').style.color = hoursLeft < 1 ? 'var(--warning)' : '';
+            }
+          }
+        })
+        .catch(() => {});
+    }
+
+    // Enable Apply button when selection changes
+    document.getElementById('select-account').addEventListener('change', checkRuntimeChanges);
+    document.getElementById('select-model').addEventListener('change', checkRuntimeChanges);
+
+    function checkRuntimeChanges() {
+      if (!runtimeData) return;
+      const newAcc = document.getElementById('select-account').value;
+      const newModel = document.getElementById('select-model').value;
+      const changed = newAcc !== runtimeData.currentAccount || newModel !== runtimeData.currentModel;
+      document.getElementById('apply-runtime').disabled = !changed;
+
+      // Update token info when account selection changes
+      const selAcc = runtimeData.accounts.find(a => a.id === newAcc);
+      if (selAcc) {
+        document.getElementById('rt-subscription').textContent = selAcc.subscriptionType;
+        const now = Date.now();
+        if (selAcc.expiresAt < now) {
+          document.getElementById('rt-token-expiry').textContent = 'EXPIRED';
+          document.getElementById('rt-token-expiry').style.color = 'var(--danger)';
+        } else {
+          const hoursLeft = Math.round((selAcc.expiresAt - now) / 3600000 * 10) / 10;
+          document.getElementById('rt-token-expiry').textContent = `${hoursLeft}h remaining`;
+          document.getElementById('rt-token-expiry').style.color = hoursLeft < 1 ? 'var(--warning)' : '';
+        }
+      }
+    }
+
+    document.getElementById('apply-runtime').addEventListener('click', () => {
+      const btn = document.getElementById('apply-runtime');
+      const acc = document.getElementById('select-account').value;
+      const model = document.getElementById('select-model').value;
+      btn.disabled = true;
+      btn.textContent = 'Applying...';
+
+      fetch(`${API_URL}/api/runtime`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ account: acc, model }),
+      })
+        .then(res => res.json())
+        .then(data => {
+          btn.textContent = 'Apply Changes';
+          showToast(data.message || 'Updated');
+          // Refresh runtime data
+          loadRuntime();
+        })
+        .catch(err => {
+          btn.textContent = 'Apply Changes';
+          btn.disabled = false;
+          showToast('Error: ' + err.message);
+        });
+    });
+
+    function showToast(message) {
+      const toast = document.getElementById('switch-toast');
+      toast.textContent = message;
+      toast.classList.add('visible');
+      setTimeout(() => toast.classList.remove('visible'), 3000);
     }
 
     // Periodically fetch status
@@ -573,6 +1076,373 @@ Send me a message or use commands like /status, /new, or /compact.
         });
       })
       .catch(() => {});
+
+    // Load runtime on startup
+    loadRuntime();
+
+    // ── Projects ────────────────────────────
+
+    let allProjects = [];
+    let activeProjectName = null;
+
+    function loadProjects() {
+      fetch(`${API_URL}/api/projects`)
+        .then(res => res.json())
+        .then(data => {
+          allProjects = data.projects || [];
+          activeProjectName = data.activeProject;
+          renderProjects();
+          updateFooter();
+        })
+        .catch(() => {});
+    }
+
+    function renderProjects(filter = '') {
+      const list = document.getElementById('projects-list');
+      const filtered = filter
+        ? allProjects.filter(p => p.name.toLowerCase().includes(filter.toLowerCase()))
+        : allProjects;
+
+      if (filtered.length === 0) {
+        list.innerHTML = '<div style="color:var(--text-muted);font-size:11px;padding:8px 20px">No projects found</div>';
+        return;
+      }
+
+      list.innerHTML = '';
+      filtered.forEach(p => {
+        const div = document.createElement('div');
+        div.className = 'project-item' + (p.name === activeProjectName ? ' active' : '');
+        const accBadge = p.account
+          ? `<span class="proj-acc">${p.account}</span>`
+          : `<span class="proj-acc none">--</span>`;
+        div.innerHTML = `<span class="proj-name" title="${p.path}">${p.name}</span>${accBadge}`;
+        div.onclick = () => selectProject(p.name);
+        list.appendChild(div);
+      });
+    }
+
+    function selectProject(name) {
+      fetch(`${API_URL}/api/projects/${encodeURIComponent(name)}/select`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      })
+        .then(res => res.json())
+        .then(data => {
+          activeProjectName = name;
+          showToast(data.message || `Project: ${name}`);
+          renderProjects(document.getElementById('project-search').value);
+          updateFooter();
+          loadRuntime(); // refresh account display
+          showProjectConfig(name);
+        })
+        .catch(err => showToast('Error: ' + err.message));
+    }
+
+    function showProjectConfig(name) {
+      const section = document.getElementById('project-config-section');
+      const project = allProjects.find(p => p.name === name);
+      if (!project) { section.style.display = 'none'; return; }
+
+      section.style.display = '';
+      document.getElementById('pc-project-name').textContent = name;
+
+      // Populate account dropdown from runtime data
+      const select = document.getElementById('pc-account');
+      select.innerHTML = '<option value="">Use gateway default</option>';
+      if (runtimeData && runtimeData.accounts) {
+        runtimeData.accounts.forEach(acc => {
+          const opt = document.createElement('option');
+          opt.value = acc.id;
+          opt.textContent = `${acc.id} (${acc.subscriptionType})`;
+          select.appendChild(opt);
+        });
+      }
+      select.value = project.account || '';
+    }
+
+    document.getElementById('pc-save').addEventListener('click', () => {
+      if (!activeProjectName) return;
+      const account = document.getElementById('pc-account').value;
+      fetch(`${API_URL}/api/projects/${encodeURIComponent(activeProjectName)}/account`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ account: account || null }),
+      })
+        .then(res => res.json())
+        .then(() => {
+          showToast(`${activeProjectName} → ${account || 'default'}`);
+          loadProjects(); // refresh
+        })
+        .catch(err => showToast('Error: ' + err.message));
+    });
+
+    document.getElementById('project-search').addEventListener('input', (e) => {
+      renderProjects(e.target.value);
+    });
+
+    function updateFooter() {
+      const el = document.getElementById('footer-project');
+      el.textContent = activeProjectName || 'No project';
+    }
+
+    loadProjects();
+
+    // ── Workers ─────────────────────────────
+
+    let workerData = { workers: [], pendingApprovals: [] };
+    let currentApproval = null;
+    const workerOutputs = {}; // workerId → recent output text
+
+    function loadWorkers() {
+      fetch(`${API_URL}/api/workers`)
+        .then(res => res.json())
+        .then(data => {
+          workerData = data;
+          renderWorkers();
+          updateApprovalBanner();
+        })
+        .catch(() => {});
+    }
+
+    function renderWorkers() {
+      const list = document.getElementById('worker-list');
+      const ws = workerData.workers || [];
+
+      if (ws.length === 0) {
+        list.innerHTML = '<div style="font-size:12px;color:var(--text-muted)">No workers running</div>';
+        return;
+      }
+
+      list.innerHTML = '';
+      ws.forEach(w => {
+        const div = document.createElement('div');
+        div.className = `worker-item ${w.state}`;
+        div.id = `worker-${w.id}`;
+
+        const stateLabel = w.state.replace('_', ' ');
+        const recentOutput = (workerOutputs[w.id] || '').slice(-600);
+
+        div.innerHTML = `
+          <div class="worker-item-header">
+            <span class="worker-item-name" title="${w.projectName}">${w.projectName}</span>
+            <span class="worker-state-badge ${w.state}">${stateLabel}</span>
+          </div>
+          ${w.taskTitle ? `<div class="worker-item-task">${w.taskTitle}</div>` : ''}
+          <div class="worker-item-acc">${w.accountId} &middot; ${w.stepCount} step${w.stepCount !== 1 ? 's' : ''}</div>
+          ${recentOutput ? `<div class="worker-output-feed" id="feed-${w.id}">${escapeHtml(recentOutput)}</div>` : ''}
+          <div class="worker-item-actions">
+            ${w.state !== 'done' && w.state !== 'error'
+              ? `<button class="worker-action-btn" onclick="openContinueModal('${w.id}')">Continue</button>`
+              : ''
+            }
+            <button class="worker-action-btn danger" onclick="killWorker('${w.id}')">Kill</button>
+          </div>
+        `;
+        list.appendChild(div);
+      });
+    }
+
+    function escapeHtml(str) {
+      return str
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+    }
+
+    function updateApprovalBanner() {
+      const pending = workerData.pendingApprovals || [];
+      const badge = document.getElementById('sidebar-approval-badge');
+
+      if (pending.length === 0) {
+        document.getElementById('approval-banner').style.display = 'none';
+        currentApproval = null;
+        badge.style.display = 'none';
+        return;
+      }
+
+      // Show the first pending approval
+      currentApproval = pending[0];
+      document.getElementById('approval-banner').style.display = '';
+      document.getElementById('approval-title').textContent =
+        `Worker ready to ${currentApproval.action.replace('_', ' ')} — ${currentApproval.description}`;
+      document.getElementById('approval-details').textContent = currentApproval.details;
+
+      // Update sidebar badge
+      badge.textContent = pending.length;
+      badge.style.display = '';
+    }
+
+    function approveCurrentApproval() {
+      if (!currentApproval) return;
+      const btn = document.getElementById('approval-approve-btn');
+      btn.disabled = true;
+      btn.textContent = 'Approving...';
+
+      fetch(`${API_URL}/api/workers/approvals/${currentApproval.id}/approve`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      })
+        .then(res => res.json())
+        .then(() => {
+          btn.textContent = 'Approve';
+          showToast('Approved — worker proceeding');
+          loadWorkers();
+        })
+        .catch(err => {
+          btn.disabled = false;
+          btn.textContent = 'Approve';
+          showToast('Error: ' + err.message);
+        });
+    }
+
+    function rejectCurrentApproval() {
+      if (!currentApproval) return;
+      fetch(`${API_URL}/api/workers/approvals/${currentApproval.id}/reject`, { method: 'POST' })
+        .then(() => {
+          showToast('Rejected — worker stopped');
+          loadWorkers();
+        })
+        .catch(err => showToast('Error: ' + err.message));
+    }
+
+    function killWorker(workerId) {
+      if (!confirm('Kill this worker?')) return;
+      fetch(`${API_URL}/api/workers/${workerId}`, { method: 'DELETE' })
+        .then(() => { showToast('Worker killed'); loadWorkers(); })
+        .catch(err => showToast('Error: ' + err.message));
+    }
+
+    // Handle live worker events from WebSocket
+    function handleWorkerEvent(event) {
+      const { type, data } = event;
+
+      if (type === 'worker.output') {
+        const id = data.workerId;
+        workerOutputs[id] = ((workerOutputs[id] || '') + data.chunk).slice(-1200);
+        const feed = document.getElementById(`feed-${id}`);
+        if (feed) {
+          feed.textContent = workerOutputs[id];
+          feed.scrollTop = feed.scrollHeight;
+        }
+        return;
+      }
+
+      // Any other worker event — refresh list + banner
+      if (type.startsWith('worker.')) {
+        loadWorkers();
+        // Show a subtle toast for key events
+        if (type === 'worker.needs_approval') {
+          showToast(`Approval needed: ${data.description || ''}`);
+        } else if (type === 'worker.done') {
+          showToast(`Done: ${data.taskTitle || data.projectName}`);
+        } else if (type === 'worker.error') {
+          showToast(`Worker error: ${(data.error || '').slice(0, 60)}`);
+        }
+      }
+    }
+
+    // ── Dispatch Modal ──────────────────────
+
+    function openDispatchModal() {
+      // Populate project dropdown
+      const projSel = document.getElementById('dispatch-project');
+      projSel.innerHTML = '';
+      allProjects.forEach(p => {
+        const opt = document.createElement('option');
+        opt.value = JSON.stringify({ name: p.name, path: p.path });
+        opt.textContent = p.name;
+        projSel.appendChild(opt);
+      });
+      if (activeProjectName) {
+        for (const opt of projSel.options) {
+          const val = JSON.parse(opt.value);
+          if (val.name === activeProjectName) { projSel.value = opt.value; break; }
+        }
+      }
+
+      // Populate account dropdown
+      const accSel = document.getElementById('dispatch-account');
+      accSel.innerHTML = '<option value="">Auto (acc2 / acc3)</option>';
+      if (runtimeData && runtimeData.accounts) {
+        runtimeData.accounts.forEach(acc => {
+          const opt = document.createElement('option');
+          opt.value = acc.id;
+          opt.textContent = `${acc.id} (${acc.subscriptionType})`;
+          accSel.appendChild(opt);
+        });
+      }
+
+      document.getElementById('dispatch-title').value = '';
+      document.getElementById('dispatch-description').value = '';
+      document.getElementById('dispatch-status').textContent = '';
+      document.getElementById('dispatch-submit-btn').disabled = false;
+      document.getElementById('dispatch-submit-btn').textContent = 'Dispatch';
+      document.getElementById('dispatch-modal').classList.add('open');
+    }
+
+    function closeDispatchModal() {
+      document.getElementById('dispatch-modal').classList.remove('open');
+    }
+
+    function closeDispatchModalOverlay(e) {
+      if (e.target === document.getElementById('dispatch-modal')) closeDispatchModal();
+    }
+
+    function submitDispatch() {
+      const projRaw = document.getElementById('dispatch-project').value;
+      const title = document.getElementById('dispatch-title').value.trim();
+      const description = document.getElementById('dispatch-description').value.trim();
+      const account = document.getElementById('dispatch-account').value || undefined;
+      const statusEl = document.getElementById('dispatch-status');
+
+      if (!projRaw || !title || !description) {
+        statusEl.textContent = 'Project, title, and description are required.';
+        statusEl.style.color = 'var(--danger)';
+        return;
+      }
+
+      const proj = JSON.parse(projRaw);
+      const btn = document.getElementById('dispatch-submit-btn');
+      btn.disabled = true;
+      btn.textContent = 'Dispatching...';
+      statusEl.textContent = 'Spawning worker and sending first step...';
+      statusEl.style.color = 'var(--text-muted)';
+
+      fetch(`${API_URL}/api/workers/dispatch`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          projectName: proj.name,
+          projectPath: proj.path,
+          title,
+          description,
+          account,
+        }),
+      })
+        .then(res => res.json())
+        .then(data => {
+          if (data.error) {
+            statusEl.textContent = 'Error: ' + data.error;
+            statusEl.style.color = 'var(--danger)';
+            btn.disabled = false;
+            btn.textContent = 'Dispatch';
+            return;
+          }
+          closeDispatchModal();
+          showToast(`Worker dispatched on ${data.accountId} — ${data.signal?.type || 'running'}`);
+          loadWorkers();
+        })
+        .catch(err => {
+          statusEl.textContent = 'Error: ' + err.message;
+          statusEl.style.color = 'var(--danger)';
+          btn.disabled = false;
+          btn.textContent = 'Dispatch';
+        });
+    }
+
+    // ── Workers auto-refresh ─────────────────
+    loadWorkers();
+    setInterval(loadWorkers, 8000);
 
     // ── Input Handling ─────────────────────
 

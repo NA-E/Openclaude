@@ -6,34 +6,30 @@
  * extended thinking, and multi-agent coordination.
  */
 
-import Anthropic from '@anthropic-ai/sdk';
 import { v4 as uuid } from 'uuid';
 import { readFileSync, existsSync } from 'fs';
-import { resolve } from 'path';
 import { logger } from '../utils/logger.js';
+import { SubprocessClient } from './subprocess-client.js';
 import type {
   AgentConfig,
   Session,
   InboundMessage,
   Message,
   OpenClaudeConfig,
-  SkillTool,
-  ToolContext,
 } from '../types/index.js';
 import type { MemoryFileStore } from '../memory/store.js';
 import type { SkillRegistry } from '../skills/registry.js';
 import type { MissionControlDB } from '../mission-control/database.js';
 import { buildSystemPrompt } from './prompts.js';
-import { buildTools, executeToolCall } from '../tools/executor.js';
-import { buildMissionControlTools, executeMCTool } from '../mission-control/tools.js';
 
 export class AgentOrchestrator {
-  private client: Anthropic;
+  private client: SubprocessClient;
   private config: OpenClaudeConfig;
   private agents: Map<string, AgentConfig> = new Map();
   private memory: MemoryFileStore;
   private skills: SkillRegistry;
   private mcDb: MissionControlDB | null = null;
+  private projectContext: { name: string; path: string } | null = null;
 
   // Map session keys to agent configs for heartbeat support
   private sessionKeyToAgent: Map<string, AgentConfig> = new Map();
@@ -42,7 +38,7 @@ export class AgentOrchestrator {
     this.config = config;
     this.memory = memory;
     this.skills = skills;
-    this.client = new Anthropic();
+    this.client = new SubprocessClient();
 
     // Create default agent
     this.createAgent({
@@ -60,6 +56,10 @@ export class AgentOrchestrator {
 
   setMissionControlDB(db: MissionControlDB) {
     this.mcDb = db;
+  }
+
+  setProjectContext(project: { name: string; path: string } | null) {
+    this.projectContext = project;
   }
 
   createAgent(agentConfig: AgentConfig) {
@@ -120,66 +120,15 @@ export class AgentOrchestrator {
         tools: tools.length > 0 ? tools : undefined,
       });
 
-      // Process the response
-      let hasToolUse = false;
-      const assistantContent: Anthropic.Messages.ContentBlock[] = [];
-
+      // Subprocess client only returns text blocks — no tool_use dispatch needed
       for (const block of completion.content) {
-        assistantContent.push(block);
-
         if (block.type === 'text') {
           response = block.text;
-        } else if (block.type === 'tool_use') {
-          hasToolUse = true;
-          logger.info('Orchestrator', `Tool call: ${block.name}`, block.input);
-
-          // Execute the tool
-          const toolContext: ToolContext = {
-            sessionId: session.id,
-            agentId: agent.id,
-            workspacePath: this.config.workspace,
-            memoryStore: this.memory,
-            sendMessage: async () => {},
-          };
-
-          // Check if it's a Mission Control tool
-          let result: string;
-          if (block.name.startsWith('mc_') && this.mcDb) {
-            result = executeMCTool(
-              block.name,
-              block.input as Record<string, unknown>,
-              agent.sessionKey || agent.id,
-              this.mcDb,
-            );
-          } else {
-            result = await executeToolCall(
-              block.name,
-              block.input as Record<string, unknown>,
-              toolContext,
-              this.skills,
-              agent.sandboxed,
-            );
-          }
-
-          // Add assistant message with tool use
-          messages.push({ role: 'assistant', content: assistantContent });
-          messages.push({
-            role: 'user',
-            content: [
-              {
-                type: 'tool_result',
-                tool_use_id: block.id,
-                content: result,
-              },
-            ],
-          });
         }
       }
 
-      // If no tool use, we're done
-      if (!hasToolUse) {
-        break;
-      }
+      // Always break — subprocess handles one shot per call
+      break;
     }
 
     // Store assistant response in session
@@ -230,6 +179,11 @@ export class AgentOrchestrator {
       }
     }
 
+    // Project context (if a project is selected)
+    if (this.projectContext) {
+      parts.push(`\n## Active Project\nYou are working on project: "${this.projectContext.name}"\nProject path: ${this.projectContext.path}\nFocus your responses on this project's context.`);
+    }
+
     // Skill prompt injections
     const skillPrompts = this.skills
       .getSkillsForAgent(agent.skills)
@@ -242,35 +196,13 @@ export class AgentOrchestrator {
     return parts.join('\n');
   }
 
-  private buildToolDefinitions(agent: AgentConfig): Anthropic.Messages.Tool[] {
-    const tools: Anthropic.Messages.Tool[] = [];
-
-    // Built-in tools
-    for (const tool of buildTools(agent.sandboxed)) {
-      tools.push(tool);
-    }
-
-    // Mission Control tools (available to all agents in the squad)
-    if (this.mcDb) {
-      for (const tool of buildMissionControlTools()) {
-        tools.push(tool);
-      }
-    }
-
-    // Skill tools
-    const skillTools = this.skills.getToolsForAgent(agent.skills);
-    for (const tool of skillTools) {
-      tools.push({
-        name: tool.name,
-        description: tool.description,
-        input_schema: tool.inputSchema as Anthropic.Messages.Tool.InputSchema,
-      });
-    }
-
-    return tools;
+  private buildToolDefinitions(_agent: AgentConfig): unknown[] {
+    // Tool definitions are passed to the subprocess but not used for tool_use dispatch.
+    // Kept for future MCP-based tool support.
+    return [];
   }
 
-  private toAnthropicMessages(session: Session): Anthropic.Messages.MessageParam[] {
+  private toAnthropicMessages(session: Session): Array<{ role: 'user' | 'assistant'; content: string }> {
     // Take last 50 messages for context window management
     const recent = session.messages.slice(-50);
     return recent
