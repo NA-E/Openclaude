@@ -7,6 +7,7 @@
 
 import type { ChannelAdapter, InboundMessage, OutboundMessage, Channel } from '../../types/index.js';
 import { logger } from '../../utils/logger.js';
+import { diagnostics } from '../../utils/diagnostics.js';
 
 interface TelegramConfig {
   token: string;
@@ -49,7 +50,18 @@ export class TelegramAdapter implements ChannelAdapter {
           groupId: ctx.chat.type !== 'private' ? String(ctx.chat.id) : undefined,
         };
 
-        this.messageHandler?.(inbound);
+        // Send typing indicator so user knows the bot is processing
+        ctx.api.sendChatAction(ctx.chat.id, 'typing').catch(() => {});
+
+        // Catch async handler errors — the grammY callback is not async,
+        // so an unhandled rejection would be silently lost.
+        if (this.messageHandler) {
+          Promise.resolve(this.messageHandler(inbound)).catch((err) => {
+            logger.error('Telegram', 'Handler error', err);
+            diagnostics.recordEvent('error', { source: 'telegram.handler', error: err instanceof Error ? err.message : String(err) });
+            ctx.api.sendMessage(ctx.chat.id, 'Sorry, something went wrong processing your message.').catch(() => {});
+          });
+        }
       });
 
       bot.start();
@@ -76,10 +88,17 @@ export class TelegramAdapter implements ChannelAdapter {
       // Chunk long messages (Telegram 4096 char limit)
       const chunks = chunkMessage(message.content, 4096);
       for (const chunk of chunks) {
-        await bot.api.sendMessage(message.channelId, chunk, { parse_mode: 'Markdown' });
+        try {
+          await bot.api.sendMessage(message.channelId, chunk, { parse_mode: 'Markdown' });
+        } catch {
+          // Markdown parse failed (unmatched *, _, `, etc.) — retry as plain text
+          await bot.api.sendMessage(message.channelId, chunk);
+        }
       }
+      diagnostics.recordEvent('telegram.send', { channelId: message.channelId, chunks: chunks.length });
     } catch (err) {
       logger.error('Telegram', 'Failed to send message', err);
+      diagnostics.recordEvent('telegram.send_error', { channelId: message.channelId, error: err instanceof Error ? err.message : String(err) });
     }
   }
 

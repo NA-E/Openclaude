@@ -107,4 +107,67 @@ describe('SessionManager', () => {
     const defaultSessions = manager.listForAgent('default');
     expect(defaultSessions.length).toBe(2);
   });
+
+  it('should create session with custom agentId when provided', () => {
+    const manager = new SessionManager();
+    const session = manager.getOrCreate({
+      channelId: 'ch-1',
+      senderId: 'user-1',
+      channelType: 'telegram',
+      agentId: 'jarvis-uuid',
+    });
+
+    expect(session.agentId).toBe('jarvis-uuid');
+  });
+
+  it('should default agentId to "default" when not provided', () => {
+    const manager = new SessionManager();
+    const session = manager.getOrCreate({
+      channelId: 'ch-1',
+      senderId: 'user-1',
+      channelType: 'webchat',
+    });
+
+    expect(session.agentId).toBe('default');
+  });
+
+  it('should preserve agentId on subsequent getOrCreate calls for same sender', () => {
+    const manager = new SessionManager();
+    const session1 = manager.getOrCreate({
+      channelId: 'ch-1',
+      senderId: 'user-1',
+      channelType: 'telegram',
+      agentId: 'jarvis-uuid',
+    });
+
+    // Second call — even without agentId, should return the same session (with original agentId)
+    const session2 = manager.getOrCreate({
+      channelId: 'ch-1',
+      senderId: 'user-1',
+      channelType: 'telegram',
+    });
+
+    expect(session1.id).toBe(session2.id);
+    expect(session2.agentId).toBe('jarvis-uuid');
+  });
+
+  it('should use different agentIds for different channel types', () => {
+    const manager = new SessionManager();
+    const telegramSession = manager.getOrCreate({
+      channelId: 'tg-ch',
+      senderId: 'user-1',
+      channelType: 'telegram',
+      agentId: 'jarvis-uuid',
+    });
+    const discordSession = manager.getOrCreate({
+      channelId: 'dc-ch',
+      senderId: 'user-1',
+      channelType: 'discord',
+      agentId: 'vision-uuid',
+    });
+
+    expect(telegramSession.agentId).toBe('jarvis-uuid');
+    expect(discordSession.agentId).toBe('vision-uuid');
+    expect(telegramSession.id).not.toBe(discordSession.id);
+  });
 });

@@ -32,11 +32,14 @@ export interface SquadMember {
  *   :24 Wanda, :30 Vision, :36 Fury, :42 Quill
  *   :48 Wong, :54 Jarvis (lead checks last)
  */
+/** Session key for the squad lead (Jarvis). Used for default DM routing. */
+export const SQUAD_LEAD_SESSION_KEY = 'agent:main:main';
+
 export const SQUAD_ROSTER: SquadMember[] = [
   {
     name: 'Jarvis',
     role: 'Squad Lead',
-    sessionKey: 'agent:main:main',
+    sessionKey: SQUAD_LEAD_SESSION_KEY,
     level: 'lead',
     avatar: 'J',
     skills: ['coordination', 'delegation', 'monitoring', 'all-tools'],

@@ -11,6 +11,7 @@ import { join } from 'path';
 import { homedir } from 'os';
 import { existsSync, readFileSync } from 'fs';
 import { logger } from '../utils/logger.js';
+import { diagnostics } from '../utils/diagnostics.js';
 
 export interface SubprocessMessage {
   role: 'user' | 'assistant';
@@ -139,6 +140,8 @@ function runClaude(opts: {
     }
 
     logger.info('SubprocessClient', `Calling claude -p (model: ${opts.model}, prompt: ${opts.systemPrompt.length} chars)`);
+    const spawnedAt = Date.now();
+    diagnostics.recordEvent('subprocess.start', { model: opts.model });
 
     const proc = spawn('claude', args, {
       env: env as NodeJS.ProcessEnv,
@@ -157,6 +160,7 @@ function runClaude(opts: {
     const timer = setTimeout(() => {
       timedOut = true;
       proc.kill();
+      diagnostics.recordEvent('subprocess.timeout', { model: opts.model, afterMs: Date.now() - spawnedAt });
       reject(new Error(`claude subprocess timed out after ${SUBPROCESS_TIMEOUT_MS / 1000}s`));
     }, SUBPROCESS_TIMEOUT_MS);
 
@@ -169,23 +173,29 @@ function runClaude(opts: {
       if (stderr) {
         logger.warn('SubprocessClient', `stderr: ${stderr.slice(0, 500)}`);
       }
+      const responseTimeMs = Date.now() - spawnedAt;
       logger.info('SubprocessClient', `claude exited code=${code}, stdout=${stdout.length} chars`);
       if (code !== 0 && !stdout) {
+        diagnostics.recordEvent('subprocess.error', { model: opts.model, code, responseTimeMs, error: stderr.slice(0, 200) });
         return reject(new Error(`claude exited ${code}: ${stderr.slice(0, 500)}`));
       }
       try {
         const result = JSON.parse(stdout.trim()) as ClaudeJsonResult;
         if (result.is_error) {
+          diagnostics.recordEvent('subprocess.error', { model: opts.model, responseTimeMs, error: result.result.slice(0, 200) });
           return reject(new Error(`Claude error: ${result.result}`));
         }
+        diagnostics.recordEvent('subprocess.end', { model: opts.model, responseTimeMs });
         resolve(result.result);
       } catch {
+        diagnostics.recordEvent('subprocess.end', { model: opts.model, responseTimeMs });
         resolve(stdout.trim() || 'No response');
       }
     });
 
     proc.on('error', (err) => {
       clearTimeout(timer);
+      diagnostics.recordEvent('subprocess.error', { model: opts.model, error: err.message });
       reject(new Error(`Failed to spawn claude: ${err.message}`));
     });
   });

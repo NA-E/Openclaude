@@ -67,8 +67,13 @@ export class Worker extends EventEmitter {
     }
 
     const env = { ...process.env, CLAUDE_CONFIG_DIR: this.configDir } as Record<string, string | undefined>;
-    delete env['CLAUDECODE'];
-    delete env['ANTHROPIC_API_KEY'];
+    // Set to empty string instead of delete — delete doesn't always work on Windows
+    // due to case-insensitive env proxy (see CLAUDE.md subprocess rules)
+    env['CLAUDECODE'] = '';
+    env['ANTHROPIC_API_KEY'] = '';
+    for (const key of Object.keys(env)) {
+      if (key.toUpperCase() === 'CLAUDECODE') env[key] = '';
+    }
 
     logger.info('Worker', `[${this.id.slice(0, 8)}] Step starting in ${this.projectPath}`);
 

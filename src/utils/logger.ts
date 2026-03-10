@@ -1,4 +1,7 @@
 import chalk from 'chalk';
+import fs from 'node:fs';
+import path from 'node:path';
+import os from 'node:os';
 
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
 
@@ -23,6 +26,53 @@ function timestamp(): string {
   return new Date().toISOString().slice(11, 23);
 }
 
+// --- File logging layer ---
+
+// eslint-disable-next-line no-control-regex
+const ANSI_RE = /\u001b\[[0-9;]*m/g;
+function stripAnsi(s: string): string {
+  return s.replace(ANSI_RE, '');
+}
+
+const logFilePath: string = process.env.OPENCLAUDE_LOG
+  || path.join(os.homedir(), '.openclaude', 'gateway.log');
+
+let logDirReady = false;
+
+function ensureLogDir(): void {
+  if (logDirReady) return;
+  try {
+    fs.mkdirSync(path.dirname(logFilePath), { recursive: true });
+    logDirReady = true;
+  } catch {
+    // silently ignore — file logging will just be skipped
+  }
+}
+
+function writeToFile(level: string, component: string, msg: string, data?: unknown): void {
+  try {
+    ensureLogDir();
+    const entry: Record<string, unknown> = {
+      ts: new Date().toISOString(),
+      level,
+      component,
+      msg: stripAnsi(msg),
+    };
+    if (data !== undefined) {
+      if (data instanceof Error) {
+        entry.data = { message: data.message, stack: data.stack };
+      } else {
+        entry.data = data;
+      }
+    }
+    fs.appendFileSync(logFilePath, JSON.stringify(entry) + '\n');
+  } catch {
+    // silently ignore file-write errors — never break the process
+  }
+}
+
+// --- Public API ---
+
 export const logger = {
   debug(component: string, message: string, data?: unknown) {
     if (!shouldLog('debug')) return;
@@ -32,6 +82,7 @@ export const logger = {
       chalk.gray(message),
       data ? chalk.gray(JSON.stringify(data, null, 2)) : '',
     );
+    writeToFile('debug', component, message, data);
   },
 
   info(component: string, message: string, data?: unknown) {
@@ -42,6 +93,7 @@ export const logger = {
       message,
       data ? chalk.gray(JSON.stringify(data)) : '',
     );
+    writeToFile('info', component, message, data);
   },
 
   warn(component: string, message: string, data?: unknown) {
@@ -52,6 +104,7 @@ export const logger = {
       chalk.yellow(message),
       data ? chalk.yellow(JSON.stringify(data)) : '',
     );
+    writeToFile('warn', component, message, data);
   },
 
   error(component: string, message: string, error?: unknown) {
@@ -62,6 +115,7 @@ export const logger = {
       chalk.red(message),
       error instanceof Error ? chalk.red(error.stack || error.message) : error ? chalk.red(String(error)) : '',
     );
+    writeToFile('error', component, message, error);
   },
 
   success(component: string, message: string) {
@@ -70,5 +124,10 @@ export const logger = {
       chalk.green(`[${component}]`),
       chalk.green(message),
     );
+    writeToFile('info', component, message);
+  },
+
+  getLogPath(): string {
+    return logFilePath;
   },
 };

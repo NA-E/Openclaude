@@ -14,6 +14,7 @@ interface GetOrCreateParams {
   senderId: string;
   channelType: ChannelType | 'api';
   groupId?: string;
+  agentId?: string;
 }
 
 export class SessionManager {
@@ -38,7 +39,7 @@ export class SessionManager {
 
     const session: Session = {
       id: uuid(),
-      agentId: 'default',
+      agentId: params.agentId || 'default',
       channelId: params.channelId,
       senderId: params.senderId,
       type: params.groupId ? 'group' : 'main',

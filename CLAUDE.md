@@ -338,11 +338,25 @@ This project was modified to run **without an Anthropic API key** using Claude C
 - `src/cli/index.ts` — `ANTHROPIC_API_KEY` check removed. No API key needed to start.
 
 ### Subprocess Rules (Critical)
-- **Must delete** `CLAUDECODE` env var before spawning — otherwise errors "nested session"
-- **Must delete** `ANTHROPIC_API_KEY` env var before spawning — prevents SDK conflicts
-- **Use** `stdio: ['ignore', 'pipe', 'pipe']` — stdin=ignore prevents permission prompts from hanging
-- **Do NOT use** `--dangerously-skip-permissions` — hangs indefinitely when stdin is closed
-- **Account**: `~/.claude-acc1` hardcoded in `subprocess-client.ts`. To switch accounts, update `CLAUDE_CONFIG_DIR` there.
+- **Must set** `CLAUDECODE=''` (empty string) before spawning — `delete` alone doesn't always work on Windows due to case-insensitive env proxy
+- **Must set** `ANTHROPIC_API_KEY=''` before spawning — prevents SDK conflicts
+- **Must call** `proc.stdin.end()` immediately after spawn — open stdin pipe causes claude to wait indefinitely on Windows
+- **Use** `stdio: ['pipe', 'pipe', 'pipe']` with `proc.stdin.end()` — this is the working combination
+- **Uses** `--dangerously-skip-permissions` — works correctly when stdin is piped then closed
+- **Account**: `~/.claude-acc1` default, switchable via `setAccount()`. Worker accounts: acc2, acc3
+
+### Heartbeat Safety (Critical)
+- **Heartbeats are DISABLED by default** in `server.ts` — the `this.heartbeat.start()` line is commented out
+- 10 agents with 2-min staggered heartbeats = ~300 claude -p calls/hour — DO NOT enable without usage-aware throttling
+- The `HEARTBEAT_CRON` env var only controls the scheduler, NOT per-agent heartbeats stored in `mission-control.json`
+- The HeartbeatSystem reads each agent's `heartbeatCron` field from the database independently
+- **NotificationDaemon trap**: If agents are `status: 'active'` and undelivered notifications exist, the daemon spawns `claude -p` every 2s per notification. Always reset agents to `idle` when restarting
+
+### Gateway Startup
+- **DM_POLICY**: Set to `open` — Telegram allowlist already restricts access
+- **SANDBOX_MODE**: Set to `false` to allow shell execution
+- When starting from within a Claude Code session: `CLAUDECODE="" ANTHROPIC_API_KEY="" npx tsx src/cli/index.ts start`
+- For production: use a startup script or Windows Task Scheduler that doesn't inherit CLAUDECODE
 
 ### Start Command
 ```bash
@@ -372,6 +386,38 @@ HEARTBEAT_CRON=0 * * * *
 - **Comments**: JSDoc-style `/** */` at file and class level; inline comments for non-obvious logic only
 - **Error handling**: Try/catch at boundaries, log with `logger.error()`
 - **File organization**: One class per file, related files in directories
+
+## Diagnostics & Observability
+
+- **Log file**: `~/.openclaude/gateway.log` — persistent JSONL, dual output (console + file). Override path with `OPENCLAUDE_LOG` env var.
+- **Diagnostics API**: `GET /api/diagnostics` — returns `{ stats, recentErrors, recentEvents }`. Ring buffer of last 100 events.
+- **Event types tracked**: `message.in`, `message.out`, `subprocess.start`, `subprocess.end`, `subprocess.error`, `subprocess.timeout`, `telegram.send`, `telegram.send_error`, `error`
+- **Stats**: totalMessages, totalErrors, avgResponseTimeMs, subprocessSuccessRate, uptimeMs, lastActivityAt
+- **Telegram reliability**: Typing indicator shown during processing. Markdown parse failures fall back to plain text. Unhandled async errors caught and sent as user-visible error message.
+
+## Routing Architecture
+
+- `resolveAgentForChannel(channelType, groupId, mcDb)` in `server.ts` — single source of truth for channel→agent routing
+- `SQUAD_LEAD_SESSION_KEY` constant in `squad.ts` — Jarvis's session key (`agent:main:main`)
+- Telegram DMs → Jarvis. All other channels → default agent. Groups → default agent.
+
+## Tests
+
+- **44 tests** across 5 files: sessions (13), memory (6), skills (5), mission-control (15), server-routing (5)
+- Run: `npx vitest run`
+
+## Production Startup
+
+- `start-openclaude.bat` — sets `CLAUDECODE=""` and `ANTHROPIC_API_KEY=""`, runs `npx tsx src/cli/index.ts start`
+- `register-service.ps1` — registers Windows Task Scheduler task (at logon, auto-restart 3x on failure)
+- To register: `powershell -ExecutionPolicy Bypass -File register-service.ps1`
+
+## Persistent Context
+- **Pending**: Register Task Scheduler service — `register-service.ps1` created but not yet executed
+- **Pending**: Test worker dispatch (acc2/acc3) end-to-end via dashboard
+- **Pending**: Build usage-aware throttling before re-enabling heartbeats
+- **Pending**: cmd.exe window flashes briefly on Windows when claude -p spawns (cosmetic, not blocking)
+- **Standing rule**: Workers (acc2/acc3) are wired but untested — do not assume they work
 
 ## Git Branch
 

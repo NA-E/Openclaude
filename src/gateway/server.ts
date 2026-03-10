@@ -13,6 +13,7 @@ import express, { type Express } from 'express';
 import { WebSocketServer, WebSocket } from 'ws';
 import { v4 as uuid } from 'uuid';
 import { logger } from '../utils/logger.js';
+import { diagnostics } from '../utils/diagnostics.js';
 import type {
   GatewayEvent,
   InboundMessage,
@@ -27,7 +28,7 @@ import { MemoryFileStore } from '../memory/store.js';
 import { SkillRegistry } from '../skills/registry.js';
 import { TaskScheduler } from '../scheduler/scheduler.js';
 import { MissionControlDB } from '../mission-control/database.js';
-import { initializeSquad, SQUAD_ROSTER } from '../mission-control/squad.js';
+import { initializeSquad, SQUAD_ROSTER, SQUAD_LEAD_SESSION_KEY } from '../mission-control/squad.js';
 import { HeartbeatSystem } from '../mission-control/heartbeat.js';
 import { AgentMemoryStack } from '../mission-control/memory-stack.js';
 import { NotificationDaemon } from '../notifications/daemon.js';
@@ -40,6 +41,23 @@ import { WorkerStore } from '../workers/store.js';
 import { WorkerOrchestrator } from '../workers/orchestrator.js';
 import { homedir } from 'os';
 import type { WorkerSummary, ApprovalRequest } from '../workers/types.js';
+
+/**
+ * Resolve which agent should handle a message based on channel type and context.
+ * Telegram DMs (no groupId) route to the Jarvis agent (squad lead).
+ * All other channels use the default agent.
+ */
+export function resolveAgentForChannel(
+  channelType: string,
+  groupId: string | undefined,
+  mcDb: { getAgentBySessionKey(key: string): { id: string } | undefined },
+): string | undefined {
+  if (channelType === 'telegram' && !groupId) {
+    const jarvis = mcDb.getAgentBySessionKey(SQUAD_LEAD_SESSION_KEY);
+    if (jarvis) return jarvis.id;
+  }
+  return undefined;
+}
 
 export class Gateway {
   private app: Express;
@@ -186,6 +204,7 @@ export class Gateway {
 
   private async handleInbound(message: InboundMessage) {
     logger.info('Gateway', `Inbound from ${message.channelType}/${message.senderId}: ${message.content.slice(0, 80)}`);
+    diagnostics.recordEvent('message.in', { channelType: message.channelType, senderId: message.senderId });
 
     // Security: DM policy check
     if (this.config.security.dmPolicy === 'pairing' && !message.groupId) {
@@ -203,12 +222,16 @@ export class Gateway {
 
     this.broadcast({ type: 'message.inbound', data: message });
 
+    // Route Telegram DMs to Jarvis (Squad Lead) instead of generic default agent
+    const agentId = resolveAgentForChannel(message.channelType, message.groupId, this.mcDb);
+
     // Find or create session
     const session = this.sessions.getOrCreate({
       channelId: message.channelId,
       senderId: message.senderId,
       channelType: message.channelType,
       groupId: message.groupId,
+      agentId,
     });
 
     this.broadcast({ type: 'agent.thinking', data: { agentId: session.agentId, sessionId: session.id } });
@@ -230,13 +253,29 @@ export class Gateway {
         content: response,
         replyToId: message.replyToId,
       });
+
+      diagnostics.recordEvent('message.out', { channelType: message.channelType, sessionId: session.id });
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);
       logger.error('Gateway', `Agent error in session ${session.id}`, err);
+      diagnostics.recordEvent('error', { sessionId: session.id, error: errorMsg });
       this.broadcast({
         type: 'agent.error',
         data: { agentId: session.agentId, sessionId: session.id, error: errorMsg },
       });
+
+      // Send a user-friendly error message back through the originating channel
+      // so the user doesn't get complete silence (e.g. on subprocess timeout)
+      try {
+        await this.router.sendToChannel(message.channelType, {
+          channelType: message.channelType,
+          channelId: message.channelId,
+          recipientId: message.senderId,
+          content: 'Sorry, I ran into an issue and couldn\'t respond. Please try again.',
+        });
+      } catch (sendErr) {
+        logger.error('Gateway', `Failed to send error message to ${message.channelType}`, sendErr);
+      }
     }
   }
 
@@ -262,6 +301,15 @@ export class Gateway {
       res.json(this.getStatus());
     });
 
+    // Diagnostics
+    this.app.get('/api/diagnostics', (_req, res) => {
+      res.json({
+        stats: diagnostics.getStats(),
+        recentErrors: diagnostics.getErrors(20),
+        recentEvents: diagnostics.getRecent(50),
+      });
+    });
+
     // Sessions
     this.app.get('/api/sessions', (_req, res) => {
       res.json(this.sessions.listAll());
@@ -281,22 +329,27 @@ export class Gateway {
 
     // Send message via API
     this.app.post('/api/message', async (req, res) => {
-      const { content, channelType = 'api', senderId = 'api-user', senderName = 'API' } = req.body;
+      const { content, channelType = 'api', channelId = 'api', senderId = 'api-user', senderName = 'API', groupId } = req.body;
       if (!content) return res.status(400).json({ error: 'content required' });
 
       const message: InboundMessage = {
         channelType,
-        channelId: 'api',
+        channelId,
         senderId,
         senderName,
         content,
+        groupId,
       };
 
       try {
+        const agentId = resolveAgentForChannel(channelType, groupId, this.mcDb);
+
         const session = this.sessions.getOrCreate({
-          channelId: 'api',
+          channelId,
           senderId,
-          channelType: 'api',
+          channelType,
+          groupId,
+          agentId,
         });
         const response = await this.orchestrator.processMessage(session, message);
         res.json({ response, sessionId: session.id });
