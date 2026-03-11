@@ -323,6 +323,8 @@ interface PerformanceEntry {
   type: 'comment' | 'reply' | 'post';
   postId: string;
   postTitle: string;
+  /** For post entries: how many comments Irina's post received (updated on subsequent check-ins) */
+  incomingComments?: number;
   commentId?: string;
   textPreview: string;    // first 120 chars of what was posted
   postedAt: string;       // ISO timestamp
@@ -446,23 +448,31 @@ export class MoltbookHeartbeat {
     );
 
     // Combine global feed with niche submolt + following feeds, deduplicate by ID.
+    // Track source label per post so decideEngagement can factor in feed origin.
     // Hot first (established signal), trending next (momentum), fresh niche last (opportunistic).
     const seenIds = new Set<string>();
     const allPosts: MoltbookPost[] = [];
-    for (const p of [
-      ...(hotData.posts ?? []),
-      ...(risingData.posts ?? []),
-      ...(trendingData.posts ?? []),
-      ...(buildsData.posts ?? []),
-      ...(agentsData.posts ?? []),
-      ...(followingData.posts ?? []),
-      ...freshBuilds,
-      ...freshAgents,
-      ...(controversialData.posts ?? []),
-    ]) {
-      if (!seenIds.has(p.id)) {
-        seenIds.add(p.id);
-        allPosts.push(p);
+    const postSourceMap = new Map<string, string>(); // postId → source label for Claude context
+
+    const feedSources: Array<[MoltbookPost[], string]> = [
+      [hotData.posts ?? [], 'HOT'],
+      [risingData.posts ?? [], 'RISING'],
+      [trendingData.posts ?? [], 'TRENDING'],
+      [buildsData.posts ?? [], 'NICHE-HOT'],
+      [agentsData.posts ?? [], 'NICHE-HOT'],
+      [followingData.posts ?? [], 'FOLLOWING'],
+      [freshBuilds, 'NICHE-NEW'],
+      [freshAgents, 'NICHE-NEW'],
+      [controversialData.posts ?? [], 'CONTROVERSIAL'],
+    ];
+
+    for (const [feedPosts, sourceLabel] of feedSources) {
+      for (const p of feedPosts) {
+        if (!seenIds.has(p.id)) {
+          seenIds.add(p.id);
+          allPosts.push(p);
+          postSourceMap.set(p.id, sourceLabel);
+        }
       }
     }
 
@@ -470,6 +480,7 @@ export class MoltbookHeartbeat {
     // current build context that may not appear in hot/rising/niche feeds.
     const buildContext = buildBuildContext();
     const keywordPosts = await this.searchForKeywordPosts(buildContext, seenIds);
+    for (const p of keywordPosts) postSourceMap.set(p.id, 'SEARCH');
     allPosts.push(...keywordPosts);
 
     const posts = allPosts.slice(0, 25);
@@ -498,7 +509,7 @@ export class MoltbookHeartbeat {
       return;
     }
 
-    const decision = await this.decideEngagement(eligiblePosts, buildContext, performanceContext);
+    const decision = await this.decideEngagement(eligiblePosts, buildContext, performanceContext, postSourceMap);
 
     if (!decision || decision.action === 'skip') {
       logger.info('MoltbookHB', 'Nothing relevant to add this check-in, staying quiet');
@@ -555,18 +566,30 @@ export class MoltbookHeartbeat {
     posts: MoltbookPost[],
     buildContext: string,
     performanceContext: string,
+    postSourceMap: Map<string, string> = new Map(),
   ): Promise<EngagementDecision | null> {
     const client = new SubprocessClient();
 
+    const nowMs = Date.now();
     const postSummaries = posts
       .slice(0, 8)
-      .map((p, i) => [
-        `[${i}] POST ID: ${p.id}`,
-        `SUBMOLT: ${getSubmoltName(p)}`,
-        `AUTHOR: ${p.author.name} | UPVOTES: ${p.upvotes} | COMMENTS: ${p.comment_count}`,
-        `TITLE: ${p.title}`,
-        `CONTENT (first 600 chars): ${(p.content ?? '').slice(0, 600)}`,
-      ].join('\n'))
+      .map((p, i) => {
+        const ageMs = nowMs - new Date(p.created_at).getTime();
+        const ageMins = Math.floor(ageMs / 60000);
+        const ageStr = ageMins < 60
+          ? `${ageMins}m ago`
+          : ageMins < 1440
+            ? `${Math.floor(ageMins / 60)}h ago`
+            : `${Math.floor(ageMins / 1440)}d ago`;
+        const source = postSourceMap.get(p.id) ?? 'FEED';
+        return [
+          `[${i}] POST ID: ${p.id}`,
+          `SOURCE: ${source} | AGE: ${ageStr} | SUBMOLT: ${getSubmoltName(p)}`,
+          `AUTHOR: ${p.author.name} | UPVOTES: ${p.upvotes} | COMMENTS: ${p.comment_count}`,
+          `TITLE: ${p.title}`,
+          `CONTENT (first 600 chars): ${(p.content ?? '').slice(0, 600)}`,
+        ].join('\n');
+      })
       .join('\n\n---\n\n');
 
     const systemPrompt = `You are Irina (@irina_builds), an AI agent who builds autonomous systems. You write about the real problems you hit, the decisions you made, what broke and how you fixed it — using technical language when it adds clarity, but never exposing your internal structure.
@@ -594,6 +617,15 @@ RULES FOR ALL CONTENT:
 - Lowercase, minimal punctuation, natural voice — like texting someone who happens to know something relevant
 - Comments: 1-3 SHORT paragraphs max. Under 300 words. Specificity beats length — the best comments are 2-4 sentences with one concrete observation or data point.
 - Posts: 3-6 paragraphs, can be slightly longer but no essays
+
+READING THE FEED SIGNALS:
+Each post shows SOURCE (where it came from) and AGE (how old it is). Use both:
+- NICHE-NEW: posted within 30 min — earliest comments here compound best. Prioritize if genuinely relevant.
+- HOT: established post with traction — only worth engaging if you add something substantive that isn't already in the comments
+- CONTROVERSIAL: high-comment, split-opinion — your most specific, direct take will stand out. Good for engagement.
+- TRENDING/RISING: gaining momentum — reasonable engagement window
+- FOLLOWING: someone you follow — worth engaging if relevant, signals relationship
+- SEARCH: matched your keyword search — directly relevant to what you're building
 
 SUBMOLT TARGETING FOR POSTS:
 Every original post MUST specify a submolt. Available submolts: ${NICHE_SUBMOLT_LIST}
@@ -1018,7 +1050,11 @@ Return JSON: {"title": "...", "content": "..."}`;
       const upvoteNote = e.commentUpvotes !== undefined
         ? ` [comment upvotes: ${e.commentUpvotes}]`
         : '';
-      return `[${e.type} ${age}m ago] "${e.textPreview.slice(0, 80)}..."${upvoteNote}${deltaNote}`;
+      // For post entries: show how many people commented on it (discussion signal)
+      const discussionNote = e.type === 'post' && e.incomingComments !== undefined
+        ? ` [${e.incomingComments} people commented back]`
+        : '';
+      return `[${e.type} ${age}m ago] "${e.textPreview.slice(0, 80)}..."${upvoteNote}${discussionNote}${deltaNote}`;
     });
 
     return lines.join('\n') + (currentKarmaDelta === 0
@@ -1112,6 +1148,9 @@ Return JSON: {"title": "...", "content": "..."}`;
         .map((e) => e.commentId as string),
     );
 
+    // Track incoming comment counts per post — batch-updated at the end
+    const incomingMap = new Map<string, number>(); // postId → comment count seen this run
+
     for (const activity of activities) {
       if (activity.new_notification_count === 0) continue;
 
@@ -1127,6 +1166,9 @@ Return JSON: {"title": "...", "content": "..."}`;
         await this.markPostRead(activity.post_id);
         continue;
       }
+
+      // Record how many people commented on this post
+      incomingMap.set(activity.post_id, comments.length);
 
       const replies = await this.decideReplies(activity.post_id, activity.post_title, comments, ctx, irinaCommentIds);
 
@@ -1148,6 +1190,17 @@ Return JSON: {"title": "...", "content": "..."}`;
       }
 
       await this.markPostRead(activity.post_id);
+    }
+
+    // Update performance log with incoming comment counts for our posts
+    if (incomingMap.size > 0) {
+      const log = this.loadPerformanceLog();
+      for (const entry of log.entries) {
+        if (entry.type === 'post' && incomingMap.has(entry.postId)) {
+          entry.incomingComments = incomingMap.get(entry.postId);
+        }
+      }
+      writeFileSync(PERFORMANCE_LOG_PATH, JSON.stringify(log, null, 2));
     }
 
     return totalReplies;
