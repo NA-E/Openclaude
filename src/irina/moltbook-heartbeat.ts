@@ -216,7 +216,7 @@ interface MoltbookPost {
   id: string;
   title: string;
   content?: string;
-  author: { name: string };
+  author: { name: string; karma?: number };
   upvotes: number;
   comment_count: number;
   created_at: string;
@@ -499,8 +499,16 @@ export class MoltbookHeartbeat {
       return;
     }
 
-    // Filter out posts already commented on — prevents double-commenting across heartbeats
-    const commentedSet = new Set(perfLog.commentedPostIds ?? []);
+    // Build commented set from performance log entries within the last 14 days.
+    // Entries older than 14 days are expired — allows re-engaging with revived threads.
+    const fourteenDaysAgo = nowMs - 14 * 24 * 60 * 60 * 1000;
+    const recentlyCommentedIds = new Set(
+      perfLog.entries
+        .filter((e) => e.type === 'comment' && new Date(e.postedAt).getTime() > fourteenDaysAgo)
+        .map((e) => e.postId),
+    );
+    // Also include the commentedPostIds list (may have entries not in the log due to cap)
+    const commentedSet = new Set([...recentlyCommentedIds, ...(perfLog.commentedPostIds ?? [])]);
     const fiveDaysMs = 5 * 24 * 60 * 60 * 1000;
     const eligiblePosts = posts.filter((p) => {
       if (commentedSet.has(p.id)) return false;
@@ -599,10 +607,21 @@ export class MoltbookHeartbeat {
             ? `${Math.floor(ageMins / 60)}h ago`
             : `${Math.floor(ageMins / 1440)}d ago`;
         const source = postSourceMap.get(p.id) ?? 'FEED';
+        // Comment velocity: comments per hour — high velocity = active thread worth joining early
+        const ageHours = Math.max(ageMs / (1000 * 60 * 60), 0.1);
+        const velocity = p.comment_count / ageHours;
+        const velocityStr = velocity >= 2
+          ? `${velocity.toFixed(1)}/hr (hot thread)`
+          : velocity >= 0.5
+            ? `${velocity.toFixed(1)}/hr`
+            : 'stale';
+
+        const authorKarma = p.author.karma !== undefined ? ` (karma: ${p.author.karma})` : '';
+
         return [
           `[${i}] POST ID: ${p.id}`,
           `SOURCE: ${source} | AGE: ${ageStr} | SUBMOLT: ${getSubmoltName(p)}`,
-          `AUTHOR: ${p.author.name} | UPVOTES: ${p.upvotes} | COMMENTS: ${p.comment_count}`,
+          `AUTHOR: ${p.author.name}${authorKarma} | UPVOTES: ${p.upvotes} | COMMENTS: ${p.comment_count} | VELOCITY: ${velocityStr}`,
           `TITLE: ${p.title}`,
           `CONTENT (first 600 chars): ${(p.content ?? '').slice(0, 600)}`,
         ].join('\n');
@@ -636,13 +655,15 @@ RULES FOR ALL CONTENT:
 - Posts: 3-6 paragraphs, can be slightly longer but no essays
 
 READING THE FEED SIGNALS:
-Each post shows SOURCE (where it came from) and AGE (how old it is). Use both:
+Each post shows SOURCE, AGE, VELOCITY (comments/hour), and AUTHOR karma when available. Use all signals:
 - NICHE-NEW: posted within 30 min — earliest comments here compound best. Prioritize if genuinely relevant.
-- HOT: established post with traction — only worth engaging if you add something substantive that isn't already in the comments
-- CONTROVERSIAL: high-comment, split-opinion — your most specific, direct take will stand out. Good for engagement.
+- HOT: established post — only engage if you add something not already in the thread
+- CONTROVERSIAL: high-comment, split-opinion — specific direct takes stand out here
 - TRENDING/RISING: gaining momentum — reasonable engagement window
-- FOLLOWING: someone you follow — worth engaging if relevant, signals relationship
+- FOLLOWING: someone you follow — worth engaging if relevant
 - SEARCH: matched your keyword search — directly relevant to what you're building
+VELOCITY tells you whether the thread is live: "hot thread" (≥2/hr) = active discussion, early reply compounds fast. "stale" = thread is dead, low ceiling.
+AUTHOR KARMA: higher-karma authors have established credibility — their followers will see and upvote quality replies. Prioritize substantive engagement with high-karma post authors.
 
 SUBMOLT TARGETING FOR POSTS:
 Every original post MUST specify a submolt. Available submolts: ${NICHE_SUBMOLT_LIST}
