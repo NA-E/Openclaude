@@ -339,6 +339,8 @@ interface PerformanceLog {
   entries: PerformanceEntry[];
   /** Post IDs Irina has already commented on — filtered out each heartbeat to avoid double-commenting */
   commentedPostIds: string[];
+  /** Post/comment IDs recently upvoted — prevent re-upvoting the same content across heartbeats */
+  recentUpvotedIds: string[];
   /** ISO date (YYYY-MM-DD) of last strategic upvote run — limit to once per heartbeat */
   lastUpvoteRun?: string;
 }
@@ -1059,14 +1061,15 @@ Output: {"score": <number>}`,
   // ─── Performance tracking & learning loop ─────────────────────────────────
 
   private loadPerformanceLog(): PerformanceLog {
-    if (!existsSync(PERFORMANCE_LOG_PATH)) return { lastKarma: 0, entries: [], commentedPostIds: [] };
+    if (!existsSync(PERFORMANCE_LOG_PATH)) return { lastKarma: 0, entries: [], commentedPostIds: [], recentUpvotedIds: [] };
     try {
       const parsed = JSON.parse(readFileSync(PERFORMANCE_LOG_PATH, 'utf8')) as PerformanceLog;
-      // Back-compat: older logs won't have this field
+      // Back-compat: older logs won't have these fields
       if (!parsed.commentedPostIds) parsed.commentedPostIds = [];
+      if (!parsed.recentUpvotedIds) parsed.recentUpvotedIds = [];
       return parsed;
     } catch {
-      return { lastKarma: 0, entries: [], commentedPostIds: [] };
+      return { lastKarma: 0, entries: [], commentedPostIds: [], recentUpvotedIds: [] };
     }
   }
 
@@ -1219,7 +1222,8 @@ Output: {"score": <number>}`,
       ) as CommentsResponse;
 
       const comments = (data.comments ?? []).filter(
-        (c) => !c.is_deleted && !c.is_spam,
+        (c) => !c.is_deleted && !c.is_spam && (c.author.karma ?? 0) >= 0,
+        // Drop negative-karma authors — confirmed bad actors/spam that slipped through is_spam
       );
 
       if (comments.length === 0) {
@@ -1393,15 +1397,19 @@ or {"replies": []} if nothing deserves a reply.`;
       return;
     }
 
-    // Upvote top hot posts (skip our own posts)
+    const upvotedSet = new Set(perfLog.recentUpvotedIds);
+
+    // Upvote top hot posts — skip our own and any already upvoted recently
     const postsToUpvote = hotPosts
-      .filter((p) => p.author.name !== 'irina_builds')
+      .filter((p) => p.author.name !== 'irina_builds' && !upvotedSet.has(p.id))
       .slice(0, 5);
 
+    const newlyUpvotedIds: string[] = [];
     let postUps = 0;
     for (const post of postsToUpvote) {
       try {
         await moltbookFetch(`/posts/${post.id}/upvote`, { method: 'POST' });
+        newlyUpvotedIds.push(post.id);
         postUps++;
         await new Promise((r) => setTimeout(r, 3000));
       } catch (err) {
@@ -1419,12 +1427,13 @@ or {"replies": []} if nothing deserves a reply.`;
         ) as CommentsResponse;
 
         const topComments = (commentsData.comments ?? [])
-          .filter((c) => !c.is_deleted && !c.is_spam && c.author.name !== 'irina_builds')
+          .filter((c) => !c.is_deleted && !c.is_spam && c.author.name !== 'irina_builds' && !upvotedSet.has(c.id))
           .slice(0, 3);
 
         for (const c of topComments) {
           try {
             await moltbookFetch(`/comments/${c.id}/upvote`, { method: 'POST' });
+            newlyUpvotedIds.push(c.id);
             commentUps++;
             await new Promise((r) => setTimeout(r, 2000));
           } catch (err) {
@@ -1436,8 +1445,9 @@ or {"replies": []} if nothing deserves a reply.`;
       }
     }
 
-    // Persist the run timestamp
+    // Persist the run timestamp + newly upvoted IDs (cap at 200 to prevent bloat)
     perfLog.lastUpvoteRun = today;
+    perfLog.recentUpvotedIds = [...upvotedSet, ...newlyUpvotedIds].slice(-200);
     writeFileSync(PERFORMANCE_LOG_PATH, JSON.stringify(perfLog, null, 2));
     logger.info('MoltbookHB', `Strategic upvotes done: ${postUps} posts, ${commentUps} comments`);
   }
@@ -1542,23 +1552,33 @@ or {"replies": []} if nothing deserves a reply.`;
 
     if (toCheck.length === 0) return;
 
-    let updated = 0;
-    for (const entry of toCheck.slice(0, 3)) {
+    // Group by postId — one API call per post covers all of Irina's comments there
+    const byPost = new Map<string, typeof toCheck>();
+    for (const entry of toCheck.slice(0, 5)) {
       if (!entry.commentId) continue;
+      if (!byPost.has(entry.postId)) byPost.set(entry.postId, []);
+      byPost.get(entry.postId)!.push(entry);
+    }
+
+    let updated = 0;
+    for (const [postId, entries] of byPost) {
       try {
-        // Fetch comments from the post and find ours by ID
+        // Fetch comments once per post — covers all of Irina's comments in one call
         const data = await moltbookFetch(
-          `/posts/${entry.postId}/comments?sort=new&limit=50`,
+          `/posts/${postId}/comments?sort=new&limit=100`,
         ) as CommentsResponse;
 
-        const mine = (data.comments ?? []).find((c) => c.id === entry.commentId);
-        if (mine !== undefined) {
-          entry.commentUpvotes = mine.upvotes;
-          updated++;
+        const commentMap = new Map((data.comments ?? []).map((c) => [c.id, c]));
+        for (const entry of entries) {
+          const mine = commentMap.get(entry.commentId!);
+          if (mine !== undefined) {
+            entry.commentUpvotes = mine.upvotes;
+            updated++;
+          }
         }
         await new Promise((r) => setTimeout(r, 1500));
       } catch (err) {
-        logger.warn('MoltbookHB', `Comment engagement check failed for ${entry.commentId}: ${err instanceof Error ? err.message : String(err)}`);
+        logger.warn('MoltbookHB', `Comment engagement check failed for post ${postId}: ${err instanceof Error ? err.message : String(err)}`);
       }
     }
 
