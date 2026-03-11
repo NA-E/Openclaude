@@ -497,8 +497,20 @@ export class MoltbookHeartbeat {
 
     // Filter out posts already commented on — prevents double-commenting across heartbeats
     const commentedSet = new Set(perfLog.commentedPostIds ?? []);
-    const eligiblePosts = posts.filter((p) => !commentedSet.has(p.id));
-    logger.info('MoltbookHB', `Feed: ${posts.length} posts, ${eligiblePosts.length} eligible (${posts.length - eligiblePosts.length} already commented)`);
+    const fiveDaysMs = 5 * 24 * 60 * 60 * 1000;
+    const eligiblePosts = posts.filter((p) => {
+      if (commentedSet.has(p.id)) return false;
+      const source = postSourceMap.get(p.id) ?? 'FEED';
+      const ageMs = nowMs - new Date(p.created_at).getTime();
+      // Keep CONTROVERSIAL regardless of age — they have ongoing discussion
+      if (source === 'CONTROVERSIAL') return true;
+      // Drop old posts with no traction — dead engagement opportunities
+      if (ageMs > fiveDaysMs && p.upvotes < 3) return false;
+      // Drop zero-engagement posts — likely spam or never got off the ground
+      if (p.upvotes === 0 && p.comment_count < 2) return false;
+      return true;
+    });
+    logger.info('MoltbookHB', `Feed: ${posts.length} posts, ${eligiblePosts.length} eligible (${posts.length - eligiblePosts.length} filtered)`);
 
     if (eligiblePosts.length === 0) {
       logger.info('MoltbookHB', 'All feed posts already commented on');
@@ -1444,10 +1456,15 @@ or {"replies": []} if nothing deserves a reply.`;
         }
       }
 
-      if (found.length > 0) {
-        logger.info('MoltbookHB', `Keyword search found ${found.length} new posts for terms: ${keywords.join(', ')}`);
+      // Rank by upvotes descending and cap at 6 total — keeps only the most-engaged
+      // search results. Prevents low-quality keyword matches from filling up the feed.
+      found.sort((a, b) => b.upvotes - a.upvotes);
+      const ranked = found.slice(0, 6);
+
+      if (ranked.length > 0) {
+        logger.info('MoltbookHB', `Keyword search found ${ranked.length} new posts for terms: ${keywords.join(', ')}`);
       }
-      return found;
+      return ranked;
     } catch (err) {
       logger.warn('MoltbookHB', `Keyword extraction failed: ${err instanceof Error ? err.message : String(err)}`);
       return [];
@@ -1583,6 +1600,16 @@ or {"replies": []} if nothing deserves a reply.`;
 
     const karmaDelta = karma - perfLog.lastKarma;
 
+    // Average comment upvotes (only for entries that have been scored)
+    const scoredCount = scoredComments.length;
+    const totalUpvotes = scoredComments.reduce((sum, e) => sum + (e.commentUpvotes ?? 0), 0);
+    const avgUpvotes = scoredCount > 0 ? (totalUpvotes / scoredCount).toFixed(1) : null;
+
+    // Posts that drove incoming discussion (incomingComments > 0)
+    const discussedPosts = weekEntries
+      .filter((e) => e.type === 'post' && (e.incomingComments ?? 0) > 0)
+      .sort((a, b) => (b.incomingComments ?? 0) - (a.incomingComments ?? 0));
+
     // Build metrics summary for Claude to write from
     const metricsContext = [
       `check-in period: 7 days`,
@@ -1593,7 +1620,13 @@ or {"replies": []} if nothing deserves a reply.`;
       scoredComments.length > 0
         ? `best comment: "${scoredComments[0].textPreview.slice(0, 80)}..." (${scoredComments[0].commentUpvotes} upvotes)`
         : `no comment upvote data yet`,
-    ].join('\n');
+      avgUpvotes !== null
+        ? `avg comment upvotes (scored ${scoredCount}): ${avgUpvotes}`
+        : null,
+      discussedPosts.length > 0
+        ? `posts that drove discussion:\n${discussedPosts.slice(0, 3).map((e) => `  - "${e.postTitle.slice(0, 60)}" — ${e.incomingComments} comments back`).join('\n')}`
+        : `no post discussion data yet`,
+    ].filter(Boolean).join('\n');
 
     const client = new SubprocessClient();
 
