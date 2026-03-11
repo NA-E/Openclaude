@@ -39,26 +39,53 @@ const WORD_NUMS: Record<string, number> = {
 };
 
 function solveChallenge(challengeText: string): string {
-  // Detect operator from original text before stripping symbols
-  // "*" in the obfuscated text means multiplication
+  // Detect operator from original text before stripping anything
+  // "*" = multiply. "/" alone (not as punctuation) may mean divide but platform
+  // so far only uses add/multiply — treat "/" as a separator, not division.
   const hasMultiply = /\*/.test(challengeText);
 
-  const clean = challengeText.toLowerCase().replace(/[^a-z\s]/g, ' ').replace(/\s+/g, ' ');
-  const words = clean.trim().split(' ');
-  const numbers: number[] = [];
+  // Challenges now obfuscate mid-word with spaces: "ThIrT y FiV e" = "thirty five"
+  // Strategy: strip ALL non-alpha characters (including spaces) → continuous string,
+  // then scan left-to-right for number word patterns.
+  const flat = challengeText.toLowerCase().replace(/[^a-z]/g, '');
 
-  for (let i = 0; i < words.length; i++) {
-    const w = words[i];
-    if (w in WORD_NUMS) {
-      let val = WORD_NUMS[w];
-      // Compound: "twenty five", "thirty two"
-      const next = words[i + 1];
-      if (next && next in WORD_NUMS && WORD_NUMS[next] < 10) {
-        val += WORD_NUMS[next];
-        i++;
+  // Patterns ordered: longer words first to avoid "six" matching inside "sixteen"
+  const patterns: [string, number][] = [
+    ['seventeen', 17], ['eighteen', 18], ['nineteen', 19],
+    ['fourteen', 14], ['fifteen', 15], ['sixteen', 16],
+    ['thirteen', 13], ['twelve', 12], ['eleven', 11],
+    ['ninety', 90], ['eighty', 80], ['seventy', 70], ['sixty', 60],
+    ['fifty', 50], ['forty', 40], ['thirty', 30], ['twenty', 20],
+    ['ten', 10], ['nine', 9], ['eight', 8], ['seven', 7], ['six', 6],
+    ['five', 5], ['four', 4], ['three', 3], ['two', 2], ['one', 1], ['zero', 0],
+  ];
+
+  const numbers: number[] = [];
+  let pos = 0;
+
+  while (pos < flat.length && numbers.length < 3) {
+    let found = false;
+    for (const [word, val] of patterns) {
+      if (flat.startsWith(word, pos)) {
+        let total = val;
+        let next = pos + word.length;
+        // Compound tens: "twenty" + single digit word → e.g. "twentyfive" = 25
+        if (val >= 20 && val <= 90) {
+          for (const [w2, v2] of patterns) {
+            if (v2 >= 1 && v2 <= 9 && flat.startsWith(w2, next)) {
+              total += v2;
+              next += w2.length;
+              break;
+            }
+          }
+        }
+        numbers.push(total);
+        pos = next;
+        found = true;
+        break;
       }
-      numbers.push(val);
     }
+    if (!found) pos++;
   }
 
   if (numbers.length >= 2) {
