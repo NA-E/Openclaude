@@ -33,6 +33,8 @@ import { HeartbeatSystem } from '../mission-control/heartbeat.js';
 import { AgentMemoryStack } from '../mission-control/memory-stack.js';
 import { NotificationDaemon } from '../notifications/daemon.js';
 import { DailyStandupGenerator } from '../standup/generator.js';
+import { IrinaDraftGenerator } from '../irina/draft-generator.js';
+import { MoltbookHeartbeat } from '../irina/moltbook-heartbeat.js';
 import { resolve } from 'path';
 import { detectAccounts, getCurrentAccountId, setAccount } from '../agent/subprocess-client.js';
 import { ProjectManager } from '../projects/manager.js';
@@ -79,6 +81,8 @@ export class Gateway {
   public memoryStack: AgentMemoryStack;
   public notificationDaemon: NotificationDaemon;
   public standupGenerator: DailyStandupGenerator;
+  public irinaGenerator: IrinaDraftGenerator;
+  public moltbookHeartbeat: MoltbookHeartbeat;
   public projectManager: ProjectManager;
 
   // Worker subsystems (Master-Worker)
@@ -130,6 +134,11 @@ export class Gateway {
     this.heartbeat = new HeartbeatSystem(this.mcDb, this.orchestrator, this.memoryStack);
     this.notificationDaemon = new NotificationDaemon(this.mcDb, this.orchestrator);
     this.standupGenerator = new DailyStandupGenerator(this.mcDb, this);
+    const irinaChat = (config.channels.telegram as { allowedUsers?: string[] } | undefined)?.allowedUsers?.[0]
+      ?? process.env.TELEGRAM_ALLOWED_USERS?.split(',')[0]
+      ?? '';
+    this.irinaGenerator = new IrinaDraftGenerator(this.router, irinaChat);
+    this.moltbookHeartbeat = new MoltbookHeartbeat();
 
     this.setupWebSocket();
     this.setupHTTPRoutes();
@@ -508,15 +517,21 @@ export class Gateway {
       }
     });
 
+    // List pending approvals — registered BEFORE /:id routes to avoid shadowing
+    this.app.get('/api/workers/approvals', (_req, res) => {
+      res.json(this.workerPool.getPendingApprovals());
+    });
+
     // Continue a worker with a follow-up instruction
     this.app.post('/api/workers/:id/continue', async (req, res) => {
       const entry = this.workerPool.getWorkerEntry(req.params.id);
       if (!entry) return res.status(404).json({ error: 'Worker not found' });
+      if (!entry.task) return res.status(400).json({ error: 'Worker has no active task — dispatch a task first' });
 
       const { instruction } = req.body;
       if (!instruction) return res.status(400).json({ error: 'instruction required' });
 
-      const lastStep = (entry.task?.steps || []).at(-1);
+      const lastStep = entry.task.steps.at(-1);
       const previousOutput = lastStep?.output || '';
 
       try {
@@ -525,7 +540,7 @@ export class Gateway {
           previousOutput,
           instruction,
           entry.config.projectName,
-          entry.task?.title || 'Task',
+          entry.task.title,
         );
         res.json(result);
       } catch (err) {
@@ -543,11 +558,6 @@ export class Gateway {
     this.app.delete('/api/workers/:id', (req, res) => {
       this.workerPool.killWorker(req.params.id);
       res.json({ killed: req.params.id });
-    });
-
-    // List pending approvals
-    this.app.get('/api/workers/approvals', (_req, res) => {
-      res.json(this.workerPool.getPendingApprovals());
     });
 
     // Approve
@@ -706,6 +716,25 @@ export class Gateway {
       const standup = this.standupGenerator.generate();
       res.json({ standup });
     });
+
+    // Irina draft generator — POST /api/irina/drafts (trigger manually, no waiting for 8 AM)
+    this.app.post('/api/irina/drafts', async (_req, res) => {
+      try {
+        const drafts = await this.irinaGenerator.generateAndSend();
+        res.json({ sent: true, drafts });
+      } catch (err) {
+        res.status(500).json({ error: err instanceof Error ? err.message : 'Draft generation failed' });
+      }
+    });
+
+    // Irina X poster — POST /api/irina/tweet { text: "..." }
+    this.app.post('/api/irina/tweet', async (req, res) => {
+      const { text } = req.body as { text?: string };
+      if (!text) return res.status(400).json({ error: 'text is required' });
+      const { postTweet } = await import('../channels/x/poster.js');
+      const result = await postTweet(text);
+      res.json(result);
+    });
   }
 
   // ─── Status ───────────────────────────────────────────────────
@@ -774,6 +803,8 @@ export class Gateway {
     // this.heartbeat.start();
     this.notificationDaemon.start();
     this.standupGenerator.start();
+    this.irinaGenerator.start();
+    this.moltbookHeartbeat.start();
     logger.warn('Gateway', 'Heartbeats DISABLED — enable manually when ready');
 
     // Start HTTP + WS server

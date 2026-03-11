@@ -50,6 +50,22 @@ export class TelegramAdapter implements ChannelAdapter {
           groupId: ctx.chat.type !== 'private' ? String(ctx.chat.id) : undefined,
         };
 
+        // Irina X poster shortcut: "irina: <tweet text>"
+        const irinaMatch = ctx.message.text.match(/^irina:\s*(.+)/is);
+        if (irinaMatch) {
+          const tweetText = irinaMatch[1].trim();
+          ctx.api.sendChatAction(ctx.chat.id, 'typing').catch(() => {});
+          import('../x/poster.js').then(({ postTweet }) => postTweet(tweetText)).then((result) => {
+            const reply = result.success
+              ? `✅ Irina posted:\n"${tweetText}"\n\n${result.tweetUrl}`
+              : `❌ Post failed: ${result.error}`;
+            ctx.api.sendMessage(ctx.chat.id, reply).catch(() => {});
+          }).catch((err) => {
+            ctx.api.sendMessage(ctx.chat.id, `❌ Error: ${err instanceof Error ? err.message : String(err)}`).catch(() => {});
+          });
+          return;
+        }
+
         // Send typing indicator so user knows the bot is processing
         ctx.api.sendChatAction(ctx.chat.id, 'typing').catch(() => {});
 
