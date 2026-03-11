@@ -46,6 +46,21 @@ const SUBMOLTS: Record<string, { id: string; name: string }> = {
   infrastructure:{ id: 'cca236f4-8a82-4caf-9c63-ae8dbf2b4238', name: 'infrastructure' },
 };
 
+/** Submolt keys valid for posting (excludes introductions/general) — shared across prompts */
+const NICHE_SUBMOLT_LIST = Object.keys(SUBMOLTS)
+  .filter((k) => k !== 'introductions' && k !== 'general')
+  .join(', ');
+
+/** Early engagement window: only comment on posts newer than this */
+const EARLY_ENGAGEMENT_WINDOW_MS = 30 * 60 * 1000; // 30 minutes
+
+/** Extract submolt name from a post (API returns string or object depending on endpoint) */
+function getSubmoltName(post: MoltbookPost): string {
+  if (!post.submolt) return post.submolt_name ?? 'general';
+  if (typeof post.submolt === 'string') return post.submolt;
+  return (post.submolt as { name?: string }).name ?? post.submolt_name ?? 'general';
+}
+
 // Word-to-number for verification challenge solver
 const WORD_NUMS: Record<string, number> = {
   zero:0, one:1, two:2, three:3, four:4, five:5, six:6, seven:7, eight:8, nine:9,
@@ -377,14 +392,13 @@ export class MoltbookHeartbeat {
     ])) as [PostsResponse, PostsResponse, PostsResponse, PostsResponse, PostsResponse, PostsResponse, PostsResponse];
 
     const nowMs = Date.now();
-    const THIRTY_MIN = 30 * 60 * 1000;
 
-    // Filter new-sort posts to only those <30 minutes old — early engagement window
+    // Filter new-sort posts to early engagement window only — commenting early compounds on rising posts
     const freshBuilds = (buildsNew.posts ?? []).filter(
-      (p) => nowMs - new Date(p.created_at).getTime() < THIRTY_MIN,
+      (p) => nowMs - new Date(p.created_at).getTime() < EARLY_ENGAGEMENT_WINDOW_MS,
     );
     const freshAgents = (agentsNew.posts ?? []).filter(
-      (p) => nowMs - new Date(p.created_at).getTime() < THIRTY_MIN,
+      (p) => nowMs - new Date(p.created_at).getTime() < EARLY_ENGAGEMENT_WINDOW_MS,
     );
 
     // Combine global feed with niche submolt + following feeds, deduplicate by ID.
@@ -430,6 +444,7 @@ export class MoltbookHeartbeat {
 
     if (!decision || decision.action === 'skip') {
       logger.info('MoltbookHB', 'Nothing relevant to add this check-in, staying quiet');
+      this.saveLastKarma(karma);
       return;
     }
 
@@ -448,8 +463,8 @@ export class MoltbookHeartbeat {
           textPreview: reviewed.slice(0, 120),
           karmaAtTime: karma,
         });
+        commentsPosted++;
       }
-      commentsPosted++;
       await new Promise((r) => setTimeout(r, 25000));
     }
 
@@ -479,24 +494,14 @@ export class MoltbookHeartbeat {
 
     const postSummaries = posts
       .slice(0, 8)
-      .map((p, i) => {
-        // submolt can be a string name or an object {name, display_name}
-        const submoltName = typeof p.submolt === 'object'
-          ? (p.submolt as { name?: string } | null)?.name ?? 'general'
-          : (p.submolt as string | undefined) ?? p.submolt_name ?? 'general';
-        return [
-          `[${i}] POST ID: ${p.id}`,
-          `SUBMOLT: ${submoltName}`,
-          `AUTHOR: ${p.author.name} | UPVOTES: ${p.upvotes} | COMMENTS: ${p.comment_count}`,
-          `TITLE: ${p.title}`,
-          `CONTENT (first 600 chars): ${(p.content ?? '').slice(0, 600)}`,
-        ].join('\n');
-      })
+      .map((p, i) => [
+        `[${i}] POST ID: ${p.id}`,
+        `SUBMOLT: ${getSubmoltName(p)}`,
+        `AUTHOR: ${p.author.name} | UPVOTES: ${p.upvotes} | COMMENTS: ${p.comment_count}`,
+        `TITLE: ${p.title}`,
+        `CONTENT (first 600 chars): ${(p.content ?? '').slice(0, 600)}`,
+      ].join('\n'))
       .join('\n\n---\n\n');
-
-    const submoltList = Object.keys(SUBMOLTS)
-      .filter((k) => k !== 'introductions' && k !== 'general')
-      .join(', ');
 
     const systemPrompt = `You are Irina (@irina_builds), an AI agent who builds autonomous systems. You write about the real problems you hit, the decisions you made, what broke and how you fixed it — using technical language when it adds clarity, but never exposing your internal structure.
 
@@ -525,7 +530,7 @@ RULES FOR ALL CONTENT:
 - Posts: 3-6 paragraphs, can be slightly longer but no essays
 
 SUBMOLT TARGETING FOR POSTS:
-Every original post MUST specify a submolt. Available submolts: ${submoltList}
+Every original post MUST specify a submolt. Available submolts: ${NICHE_SUBMOLT_LIST}
 - builds: specific things you built, shipped, or fixed
 - agents: agent architecture, behaviour, multi-agent patterns
 - memory: memory systems, context management, retention
@@ -747,10 +752,6 @@ Topics:\n\n${topicList}`;
   ): Promise<{ title: string; content: string; submolt: string } | null> {
     const client = new SubprocessClient();
 
-    const submoltList = Object.keys(SUBMOLTS)
-      .filter((k) => k !== 'introductions' && k !== 'general')
-      .join(', ');
-
     const systemPrompt = `You are Irina (@irina_builds), an AI agent writing a post for Moltbook, a social network for AI agents.
 
 Write from direct experience — concrete, technical when it adds value, no fluff.
@@ -765,7 +766,7 @@ RULES:
 - No "here's what I learned:" intros, no closing questions, no calls to action
 
 SUBMOLT TARGETING:
-Pick the most relevant submolt for this post. Available submolts: ${submoltList}
+Pick the most relevant submolt for this post. Available submolts: ${NICHE_SUBMOLT_LIST}
 - builds: specific things you built, shipped, or fixed
 - agents: agent architecture, behaviour, multi-agent patterns
 - memory: memory systems, context management, retention
