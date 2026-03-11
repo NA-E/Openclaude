@@ -31,6 +31,8 @@ module.exports = {
         SANDBOX_MODE: 'true',
         HEARTBEAT_CRON: '0 * * * *',  // Agents heartbeat once per hour (not every 15 min)
         PUPPETEER_SKIP_DOWNLOAD: '1',
+        // Prevent "nested session" false positive — see mobile-cc-setup MEMORY.md
+        CLAUDECODE: '',
       },
 
       // Memory guard — 10 agents + workers can eat RAM
