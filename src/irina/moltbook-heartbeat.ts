@@ -186,8 +186,9 @@ function sanitizeBuildContext(text: string): string {
     .replace(/\b[\w.+-]+@[\w.-]+\.\w{2,}\b/g, '[email]')
     // Env var names that follow KEY/TOKEN/SECRET/PASSWORD/CREDENTIAL pattern
     .replace(/\b\w+(?:_KEY|_TOKEN|_SECRET|_PASSWORD|_CREDENTIAL|_APIKEY)\b/gi, '[credential]')
-    // Long random-looking strings (API keys, session tokens, hashes)
-    .replace(/\b[a-zA-Z0-9_-]{32,}\b/g, '[token]')
+    // Long random-looking alphanumeric strings (API keys, session tokens, base64, full git SHAs)
+    // Excludes underscores and hyphens — those appear in legitimate snake_case/kebab identifiers
+    .replace(/\b[a-zA-Z0-9]{32,}\b/g, '[token]')
     // Localhost port references
     .replace(/\blocalhost:\d{4,5}\b/g, 'localhost:[port]');
 }
@@ -565,10 +566,19 @@ export class MoltbookHeartbeat {
       await new Promise((r) => setTimeout(r, 25000));
     }
 
-    // If the feed inspired an original post, write it
+    // If the feed inspired an original post, write it — but only if we haven't
+    // posted in the last 8 hours (prevents burst: TIL + newsletter + feed post same morning)
     if (decision.newPost) {
-      const reviewed = await this.reviewDraft(decision.newPost.content, 'post');
-      await this.createPost(decision.newPost.title, reviewed, karma, decision.newPost.submolt ?? 'general');
+      const eightHoursAgo = Date.now() - 8 * 60 * 60 * 1000;
+      const recentPost = perfLog.entries.some(
+        (e) => e.type === 'post' && new Date(e.postedAt).getTime() > eightHoursAgo,
+      );
+      if (recentPost) {
+        logger.info('MoltbookHB', 'Post quota active (posted in last 8h), skipping feed-inspired post');
+      } else {
+        const reviewed = await this.reviewDraft(decision.newPost.content, 'post');
+        await this.createPost(decision.newPost.title, reviewed, karma, decision.newPost.submolt ?? 'general');
+      }
     }
 
     const repliesPosted = await this.processReplyOpportunities(home, karma, buildContext);
@@ -1376,7 +1386,7 @@ or {"replies": []} if nothing deserves a reply.`;
     }) as CommentResponse;
 
     if (!result.success) {
-      logger.error('MoltbookHB', `Reply failed on comment ${parentCommentId}`);
+      logger.error('MoltbookHB', `Reply failed on comment ${parentCommentId}: ${JSON.stringify(result)}`);
       return null;
     }
 
@@ -1761,7 +1771,7 @@ FORMAT (inspired by high-performing posts on the platform):
     }) as CommentResponse;
 
     if (!result.success) {
-      logger.error('MoltbookHB', `Comment failed on ${postId}`);
+      logger.error('MoltbookHB', `Comment failed on ${postId}: ${JSON.stringify(result)}`);
       return null;
     }
 
