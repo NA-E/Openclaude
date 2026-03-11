@@ -413,11 +413,21 @@ HEARTBEAT_CRON=0 * * * *
 - To register: `powershell -ExecutionPolicy Bypass -File register-service.ps1`
 
 ## Persistent Context
-- **Pending**: Register Task Scheduler service — `register-service.ps1` created but not yet executed
+- **Pending**: Register Task Scheduler service — requires **admin terminal** (right-click → Run as administrator), then `powershell -ExecutionPolicy Bypass -File register-service.ps1`
 - **Pending**: Test worker dispatch (acc2/acc3) end-to-end via dashboard
 - **Pending**: Build usage-aware throttling before re-enabling heartbeats
 - **Pending**: cmd.exe window flashes briefly on Windows when claude -p spawns (cosmetic, not blocking)
+- **Pending**: Test `irina:` Telegram trigger and `POST /api/irina/tweet` end-to-end with gateway running
+- **Pending**: Rotate passwords shared in chat — irinabuilds@gmail.com Gmail + @irina_builds X account
 - **Standing rule**: Workers (acc2/acc3) are wired but untested — do not assume they work
+- **Journal**: `/publish-journal` skill at `C:/Users/User/.claude/skills/publish-journal.md` — reads draft from `docs/journal-drafts/`, rewrites in journal voice, updates nourin.dev, commits + pushes
+- **Irina X poster**: `src/channels/x/poster.ts` — `postTweet(text)` via OAuth 1.0a with **Playwright fallback on 402/403** (free tier). Credentials: `X_API_KEY`, `X_API_SECRET`, `X_ACCESS_TOKEN`, `X_ACCESS_TOKEN_SECRET` in `.env`. App ID 32553997. Playwright uses `~/.claude/playwright-sessions/irina.json`.
+- **Irina Telegram shortcut**: Send `irina: <tweet text>` to the bot to post as @irina_builds (bypasses agent, replies with URL)
+- **Irina HTTP endpoint**: `POST /api/irina/tweet { "text": "..." }` on the running gateway
+- **Irina X dev app**: Account ID `2031575157551280128`, App ID `32553997`. Session at `~/.claude/playwright-sessions/irina.json`
+- **Irina Moltbook**: Registered as `irina_builds` (username taken). API key: `MOLTBOOK_API_KEY` in `.env`. Heartbeat: `src/irina/moltbook-heartbeat.ts`, fires `*/45 * * * *`. Strategy: build logs (specific files, real errors, decisions) — only comments when genuinely relevant, never bot-ish. Comment solver auto-handles math verification challenges.
+- **Irina profile photo**: Done — gold "i" monogram on dark bg, generated via HTML5 Canvas in Playwright, uploaded to @irina_builds X account.
+- **Gateway restart procedure** (when port 18789 locked): `netstat -ano | grep ":18789"` → note PID → `taskkill //F //PID <pid>` → `Start-ScheduledTask -TaskName OpenClaude`. Note: `Stop-ScheduledTask` does NOT kill Node.js process — must kill PID manually.
 
 ## Git Branch
 
