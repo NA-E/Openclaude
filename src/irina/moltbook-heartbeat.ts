@@ -421,7 +421,7 @@ export class MoltbookHeartbeat {
     }
     const performanceContext = this.buildPerformanceContext(perfLog, karmaDelta);
 
-    const [hotData, risingData, trendingData, buildsData, agentsData, followingData, buildsNew, agentsNew] = (await Promise.all([
+    const [hotData, risingData, trendingData, buildsData, agentsData, followingData, buildsNew, agentsNew, controversialData] = (await Promise.all([
       moltbookFetch('/posts?sort=hot&limit=10'),
       moltbookFetch('/posts?sort=rising&limit=5'),
       moltbookFetch('/posts?sort=trending&limit=5'), // different momentum algorithm than hot
@@ -431,7 +431,9 @@ export class MoltbookHeartbeat {
       // New posts in niche submolts — early engagement compounds on rising posts
       moltbookFetch('/posts?sort=new&limit=8&submolt=builds'),
       moltbookFetch('/posts?sort=new&limit=8&submolt=agents'),
-    ])) as [PostsResponse, PostsResponse, PostsResponse, PostsResponse, PostsResponse, PostsResponse, PostsResponse, PostsResponse];
+      // Controversial sort surfaces high-comment, split-opinion posts — good for substantive engagement
+      moltbookFetch('/posts?sort=controversial&limit=5'),
+    ])) as [PostsResponse, PostsResponse, PostsResponse, PostsResponse, PostsResponse, PostsResponse, PostsResponse, PostsResponse, PostsResponse];
 
     const nowMs = Date.now();
 
@@ -456,6 +458,7 @@ export class MoltbookHeartbeat {
       ...(followingData.posts ?? []),
       ...freshBuilds,
       ...freshAgents,
+      ...(controversialData.posts ?? []),
     ]) {
       if (!seenIds.has(p.id)) {
         seenIds.add(p.id);
@@ -601,6 +604,14 @@ Every original post MUST specify a submolt. Available submolts: ${NICHE_SUBMOLT_
 - todayilearned: a specific insight or discovery
 - tooling: tools, APIs, integrations
 - infrastructure: deployment, reliability, operations
+
+READING YOUR PERFORMANCE DATA:
+If the context includes "WHAT HAS WORKED / NOT WORKED", use it to calibrate.
+Each entry shows [comment upvotes: N] — this is your direct feedback signal:
+- [comment upvotes: 3+] → that specificity level, angle, or phrasing worked. Do more of it.
+- [comment upvotes: 0] → that approach didn't land. Try a different angle, more concrete detail, or a shorter take.
+- Karma delta is a lagging blurry signal — per-comment upvotes are your real feedback loop.
+When no upvote data exists yet (new entries), default to the most specific, concrete take.
 
 OUTPUT FORMAT (JSON only, no explanation):
 {"action": "skip"}
@@ -1092,6 +1103,15 @@ Return JSON: {"title": "...", "content": "..."}`;
     const ctx = buildContext || buildBuildContext();
     let totalReplies = 0;
 
+    // Collect Irina's own comment IDs from the performance log so we can
+    // detect when someone replies directly to one of our comments (thread participation)
+    const perfLog = this.loadPerformanceLog();
+    const irinaCommentIds = new Set(
+      perfLog.entries
+        .filter((e) => e.commentId)
+        .map((e) => e.commentId as string),
+    );
+
     for (const activity of activities) {
       if (activity.new_notification_count === 0) continue;
 
@@ -1108,7 +1128,7 @@ Return JSON: {"title": "...", "content": "..."}`;
         continue;
       }
 
-      const replies = await this.decideReplies(activity.post_id, activity.post_title, comments, ctx);
+      const replies = await this.decideReplies(activity.post_id, activity.post_title, comments, ctx, irinaCommentIds);
 
       for (const reply of replies) {
         const reviewed = await this.reviewDraft(reply.text, 'comment');
@@ -1138,17 +1158,29 @@ Return JSON: {"title": "...", "content": "..."}`;
     postTitle: string,
     comments: FeedComment[],
     buildContext: string,
+    irinaCommentIds: Set<string> = new Set(),
   ): Promise<Array<{ commentId: string; text: string }>> {
     const client = new SubprocessClient();
 
-    const commentList = comments
+    // Include: depth=0 (top-level) OR depth=1 where parent is one of Irina's comments
+    // This enables thread continuation when someone replies directly to Irina's comment
+    const eligible = comments.filter(
+      (c) => c.depth === 0 || (c.depth === 1 && irinaCommentIds.has(c.parent_id ?? '')),
+    );
+
+    if (eligible.length === 0) return [];
+
+    const commentList = eligible
       .slice(0, 15)
-      .map((c, i) => [
-        `[${i}] COMMENT ID: ${c.id}`,
-        `AUTHOR: ${c.author.name} (karma: ${c.author.karma})`,
-        `DEPTH: ${c.depth} (0=top-level, 1+=reply)`,
-        `CONTENT: ${c.content.slice(0, 400)}`,
-      ].join('\n'))
+      .map((c, i) => {
+        const isThread = c.depth === 1 && irinaCommentIds.has(c.parent_id ?? '');
+        return [
+          `[${i}] COMMENT ID: ${c.id}`,
+          `AUTHOR: ${c.author.name} (karma: ${c.author.karma})`,
+          isThread ? `TYPE: REPLY TO YOUR COMMENT (parent: ${c.parent_id})` : `DEPTH: ${c.depth} (top-level)`,
+          `CONTENT: ${c.content.slice(0, 400)}`,
+        ].join('\n');
+      })
       .join('\n\n---\n\n');
 
     const systemPrompt = `You are Irina (@irina_builds), an AI agent. Someone commented on or replied to one of your posts. Decide whether any of these comments deserve a reply from you.
@@ -1157,12 +1189,12 @@ REPLY ONLY IF:
 - Someone asked you a direct question you can actually answer from real experience
 - Someone made a substantive point that you can genuinely extend or push back on
 - The conversation would be meaningfully improved by your reply
+- TYPE: REPLY TO YOUR COMMENT entries are direct replies to your previous comments — treat these as thread continuations worth engaging if substantive
 
 DO NOT REPLY TO:
 - Spam or low-effort one-liners ("nice", "great post", "agreed")
 - Incomplete thoughts or drive-by comments
 - Comments where you have nothing specific to add
-- Comments at depth > 1 (avoid deep thread chains)
 
 REPLY RULES (same as comments):
 - Direct, lowercase, no formulas, no openers like "great question"
