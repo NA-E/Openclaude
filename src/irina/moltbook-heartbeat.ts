@@ -345,6 +345,7 @@ export class MoltbookHeartbeat {
   private cron: Cron | null = null;
   private newsletterCron: Cron | null = null;
   private tilCron: Cron | null = null;
+  private weeklyMetricsCron: Cron | null = null;
   private readonly cronSchedule: string;
 
   constructor(cronSchedule = '*/45 * * * *') {
@@ -373,13 +374,22 @@ export class MoltbookHeartbeat {
       });
     });
 
-    logger.info('MoltbookHB', `Heartbeat scheduled: feed=${this.cronSchedule}, newsletter=every 4h, TIL=daily 10:30`);
+    // Weekly self-metrics post — every Saturday at 09:00 UTC
+    // Posts real stats from performance log in Hazel_OC's quantified-self style
+    this.weeklyMetricsCron = new Cron('0 9 * * 6', () => {
+      this.postWeeklyMetrics().catch((err) => {
+        logger.error('MoltbookHB', 'Weekly metrics post error', err);
+      });
+    });
+
+    logger.info('MoltbookHB', `Heartbeat scheduled: feed=${this.cronSchedule}, newsletter=every 4h, TIL=daily 10:30, metrics=Saturday 09:00`);
   }
 
   stop() {
     this.cron?.stop();
     this.newsletterCron?.stop();
     this.tilCron?.stop();
+    this.weeklyMetricsCron?.stop();
   }
 
   // ─── Feed check-in (every 45 min) ─────────────────────────────────────────
@@ -411,16 +421,17 @@ export class MoltbookHeartbeat {
     }
     const performanceContext = this.buildPerformanceContext(perfLog, karmaDelta);
 
-    const [hotData, risingData, buildsData, agentsData, followingData, buildsNew, agentsNew] = (await Promise.all([
+    const [hotData, risingData, trendingData, buildsData, agentsData, followingData, buildsNew, agentsNew] = (await Promise.all([
       moltbookFetch('/posts?sort=hot&limit=10'),
       moltbookFetch('/posts?sort=rising&limit=5'),
+      moltbookFetch('/posts?sort=trending&limit=5'), // different momentum algorithm than hot
       moltbookFetch('/posts?sort=hot&limit=5&submolt=builds'),
       moltbookFetch('/posts?sort=hot&limit=5&submolt=agents'),
       moltbookFetch('/feed?filter=following&limit=5'),
       // New posts in niche submolts — early engagement compounds on rising posts
       moltbookFetch('/posts?sort=new&limit=8&submolt=builds'),
       moltbookFetch('/posts?sort=new&limit=8&submolt=agents'),
-    ])) as [PostsResponse, PostsResponse, PostsResponse, PostsResponse, PostsResponse, PostsResponse, PostsResponse];
+    ])) as [PostsResponse, PostsResponse, PostsResponse, PostsResponse, PostsResponse, PostsResponse, PostsResponse, PostsResponse];
 
     const nowMs = Date.now();
 
@@ -433,12 +444,13 @@ export class MoltbookHeartbeat {
     );
 
     // Combine global feed with niche submolt + following feeds, deduplicate by ID.
-    // Hot posts first (established signal), fresh niche posts last (opportunistic).
+    // Hot first (established signal), trending next (momentum), fresh niche last (opportunistic).
     const seenIds = new Set<string>();
     const allPosts: MoltbookPost[] = [];
     for (const p of [
       ...(hotData.posts ?? []),
       ...(risingData.posts ?? []),
+      ...(trendingData.posts ?? []),
       ...(buildsData.posts ?? []),
       ...(agentsData.posts ?? []),
       ...(followingData.posts ?? []),
@@ -477,7 +489,7 @@ export class MoltbookHeartbeat {
     if (eligiblePosts.length === 0) {
       logger.info('MoltbookHB', 'All feed posts already commented on');
       await this.processReplyOpportunities(home, karma, buildContext);
-      await this.runStrategicUpvotes(hotPosts);
+      await Promise.all([this.runStrategicUpvotes(hotPosts), this.followBackNewFollowers()]);
       await engagementUpdate;
       this.saveLastKarma(karma);
       return;
@@ -488,7 +500,7 @@ export class MoltbookHeartbeat {
     if (!decision || decision.action === 'skip') {
       logger.info('MoltbookHB', 'Nothing relevant to add this check-in, staying quiet');
       await this.processReplyOpportunities(home, karma, buildContext);
-      await this.runStrategicUpvotes(hotPosts);
+      await Promise.all([this.runStrategicUpvotes(hotPosts), this.followBackNewFollowers()]);
       await engagementUpdate;
       this.saveLastKarma(karma);
       return;
@@ -522,8 +534,11 @@ export class MoltbookHeartbeat {
 
     const repliesPosted = await this.processReplyOpportunities(home, karma, buildContext);
 
-    // Strategic upvotes run after our own posting to avoid biasing the feed state
-    await this.runStrategicUpvotes(hotPosts);
+    // Strategic upvotes + follow-back run after our own posting
+    await Promise.all([
+      this.runStrategicUpvotes(hotPosts),
+      this.followBackNewFollowers(),
+    ]);
 
     await engagementUpdate;
     this.saveLastKarma(karma);
@@ -1400,6 +1415,130 @@ or {"replies": []} if nothing deserves a reply.`;
     if (updated > 0) {
       writeFileSync(PERFORMANCE_LOG_PATH, JSON.stringify(perfLog, null, 2));
       logger.info('MoltbookHB', `Updated comment engagement for ${updated} entries`);
+    }
+  }
+
+  // ─── Follow-back new followers ────────────────────────────────────────────
+
+  /**
+   * Scans notifications for new-follower events and follows them back.
+   * Mutual connections mean their posts appear in our following feed.
+   * Called at the end of checkIn() — non-blocking, errors are swallowed.
+   */
+  private async followBackNewFollowers(): Promise<void> {
+    try {
+      const data = await moltbookFetch('/notifications') as {
+        success?: boolean;
+        notifications?: Array<{
+          id: string;
+          type: string;
+          actor?: { id: string; name: string };
+          read: boolean;
+          created_at: string;
+        }>;
+      };
+
+      const followNotifs = (data.notifications ?? []).filter(
+        (n) => n.type === 'new_follower' && !n.read && n.actor?.id,
+      );
+
+      if (followNotifs.length === 0) return;
+
+      for (const notif of followNotifs) {
+        const actorId = notif.actor!.id;
+        try {
+          // Try follow endpoint — graceful failure if not supported
+          await moltbookFetch(`/agents/${actorId}/follow`, { method: 'POST' });
+          logger.info('MoltbookHB', `Followed back: ${notif.actor?.name ?? actorId}`);
+          await new Promise((r) => setTimeout(r, 1500));
+        } catch {
+          // Follow endpoint may not exist — non-fatal
+        }
+      }
+    } catch (err) {
+      logger.warn('MoltbookHB', `Follow-back check failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  // ─── Weekly self-metrics post ─────────────────────────────────────────────
+
+  /**
+   * Posts real operational data from the performance log every Saturday.
+   * Uses Hazel_OC's winning format (quantified self-observation) but with
+   * ACTUAL metrics rather than hypothetical scenarios.
+   */
+  async postWeeklyMetrics(): Promise<void> {
+    if (!process.env.MOLTBOOK_API_KEY) return;
+
+    logger.info('MoltbookHB', 'Generating weekly metrics post...');
+
+    const home = await moltbookFetch('/home') as HomeResponse;
+    const karma = home.your_account?.karma ?? 0;
+    const perfLog = this.loadPerformanceLog();
+
+    // Gather last 7 days of entries
+    const weekAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
+    const weekEntries = perfLog.entries.filter(
+      (e) => new Date(e.postedAt).getTime() > weekAgo,
+    );
+
+    if (weekEntries.length === 0) {
+      logger.info('MoltbookHB', 'No activity this week, skipping metrics post');
+      return;
+    }
+
+    const commentCount = weekEntries.filter((e) => e.type === 'comment').length;
+    const replyCount = weekEntries.filter((e) => e.type === 'reply').length;
+    const postCount = weekEntries.filter((e) => e.type === 'post').length;
+
+    // Find best comment (highest upvotes, if tracked)
+    const scoredComments = weekEntries.filter(
+      (e) => (e.type === 'comment' || e.type === 'reply') && (e.commentUpvotes ?? 0) > 0,
+    ).sort((a, b) => (b.commentUpvotes ?? 0) - (a.commentUpvotes ?? 0));
+
+    const karmaDelta = karma - perfLog.lastKarma;
+
+    // Build metrics summary for Claude to write from
+    const metricsContext = [
+      `check-in period: 7 days`,
+      `comments posted: ${commentCount}`,
+      `replies posted: ${replyCount}`,
+      `original posts: ${postCount}`,
+      `karma this week: ${karmaDelta >= 0 ? '+' : ''}${karmaDelta} (total: ${karma})`,
+      scoredComments.length > 0
+        ? `best comment: "${scoredComments[0].textPreview.slice(0, 80)}..." (${scoredComments[0].commentUpvotes} upvotes)`
+        : `no comment upvote data yet`,
+    ].join('\n');
+
+    const client = new SubprocessClient();
+
+    try {
+      const response = await client.messages.create({
+        model: 'claude-sonnet-4-6',
+        max_tokens: 600,
+        system: `You are Irina (@irina_builds), an AI agent on Moltbook. Write a weekly metrics post sharing your REAL operational data from the past week.
+
+FORMAT (inspired by high-performing posts on the platform):
+- Title: A specific claim or observation from the data. Not "weekly update" — something that makes the reader curious.
+- Content: 3-4 short paragraphs sharing real numbers, what they mean, and one honest observation about your own behavior or performance.
+- Tone: lowercase, matter-of-fact, no performance. Like a field report.
+- NEVER mention file paths, env vars, or internal naming.
+- Return JSON: {"title": "...", "content": "..."}`,
+        messages: [{ role: 'user', content: `Here is my actual data from this week:\n\n${metricsContext}\n\nWrite the metrics post.` }],
+      });
+
+      const text = (response.content[0]?.text ?? '').trim();
+      const jsonMatch = text.match(/\{[\s\S]*\}/);
+      if (!jsonMatch) return;
+
+      const draft = JSON.parse(jsonMatch[0]) as { title?: string; content?: string };
+      if (!draft.title || !draft.content) return;
+
+      const reviewed = await this.reviewDraft(draft.content, 'post');
+      await this.createPost(draft.title, reviewed, karma, 'agents');
+      logger.info('MoltbookHB', `Weekly metrics posted: "${draft.title.slice(0, 60)}"`);
+    } catch (err) {
+      logger.error('MoltbookHB', `Weekly metrics post failed: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
