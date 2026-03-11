@@ -54,6 +54,9 @@ const NICHE_SUBMOLT_LIST = Object.keys(SUBMOLTS)
 /** Early engagement window: only comment on posts newer than this */
 const EARLY_ENGAGEMENT_WINDOW_MS = 30 * 60 * 1000; // 30 minutes
 
+/** How long to track per-comment upvote signal before giving up */
+const COMMENT_ENGAGEMENT_WINDOW_MS = 6 * 60 * 60 * 1000; // 6 hours
+
 /** Extract submolt name from a post (API returns string or object depending on endpoint) */
 function getSubmoltName(post: MoltbookPost): string {
   if (!post.submolt) return post.submolt_name ?? 'general';
@@ -456,9 +459,11 @@ export class MoltbookHeartbeat {
 
     const posts = allPosts.slice(0, 25);
 
+    const hotPosts = hotData.posts ?? [];
+
     if (posts.length === 0) {
       logger.info('MoltbookHB', 'No posts found, running upvotes only');
-      await this.runStrategicUpvotes(hotData.posts ?? []);
+      await this.runStrategicUpvotes(hotPosts);
       await engagementUpdate;
       this.saveLastKarma(karma);
       return;
@@ -470,23 +475,20 @@ export class MoltbookHeartbeat {
     logger.info('MoltbookHB', `Feed: ${posts.length} posts, ${eligiblePosts.length} eligible (${posts.length - eligiblePosts.length} already commented)`);
 
     if (eligiblePosts.length === 0) {
-      logger.info('MoltbookHB', 'All feed posts already commented on, skipping engagement');
-      await this.processReplyOpportunities(home, karma);
-      // Still run upvotes even when we have nothing to say — maintain presence
-      await this.runStrategicUpvotes(hotData.posts ?? []);
+      logger.info('MoltbookHB', 'All feed posts already commented on');
+      await this.processReplyOpportunities(home, karma, buildContext);
+      await this.runStrategicUpvotes(hotPosts);
       await engagementUpdate;
       this.saveLastKarma(karma);
       return;
     }
 
-    // buildContext was already computed for keyword search above
     const decision = await this.decideEngagement(eligiblePosts, buildContext, performanceContext);
 
     if (!decision || decision.action === 'skip') {
       logger.info('MoltbookHB', 'Nothing relevant to add this check-in, staying quiet');
-      // Still run upvotes and reply checks even when skipping comments
-      await this.processReplyOpportunities(home, karma);
-      await this.runStrategicUpvotes(hotData.posts ?? []);
+      await this.processReplyOpportunities(home, karma, buildContext);
+      await this.runStrategicUpvotes(hotPosts);
       await engagementUpdate;
       this.saveLastKarma(karma);
       return;
@@ -518,16 +520,12 @@ export class MoltbookHeartbeat {
       await this.createPost(decision.newPost.title, reviewed, karma, decision.newPost.submolt ?? 'general');
     }
 
-    // Process reply opportunities from notifications on our own posts
-    const repliesPosted = await this.processReplyOpportunities(home, karma);
+    const repliesPosted = await this.processReplyOpportunities(home, karma, buildContext);
 
-    // Strategic upvotes — after our own posting to not bias the feed state
-    await this.runStrategicUpvotes(hotData.posts ?? []);
+    // Strategic upvotes run after our own posting to avoid biasing the feed state
+    await this.runStrategicUpvotes(hotPosts);
 
-    // Await engagement update (started at top of check-in)
     await engagementUpdate;
-
-    // Save current karma for next delta calculation
     this.saveLastKarma(karma);
 
     logger.info('MoltbookHB', `Check-in complete. Comments: ${commentsPosted}, replies: ${repliesPosted}, new post: ${decision.newPost ? 'yes' : 'no'}`);
@@ -1067,16 +1065,21 @@ Return JSON: {"title": "...", "content": "..."}`;
    * asks Claude which deserve a reply, and posts them.
    * Returns the number of replies posted.
    */
-  private async processReplyOpportunities(home: HomeResponse, karma = 0): Promise<number> {
+  private async processReplyOpportunities(
+    home: HomeResponse,
+    karma = 0,
+    buildContext = '',
+  ): Promise<number> {
     const activities = home.activity_on_your_posts ?? [];
     if (activities.length === 0) return 0;
 
+    // Build context once for all reply decisions (avoid repeated file reads)
+    const ctx = buildContext || buildBuildContext();
     let totalReplies = 0;
 
     for (const activity of activities) {
       if (activity.new_notification_count === 0) continue;
 
-      // Fetch new comments on this post
       const data = await moltbookFetch(
         `/posts/${activity.post_id}/comments?sort=new&limit=20`,
       ) as CommentsResponse;
@@ -1090,8 +1093,7 @@ Return JSON: {"title": "...", "content": "..."}`;
         continue;
       }
 
-      const buildContext = buildBuildContext();
-      const replies = await this.decideReplies(activity.post_id, activity.post_title, comments, buildContext);
+      const replies = await this.decideReplies(activity.post_id, activity.post_title, comments, ctx);
 
       for (const reply of replies) {
         const reviewed = await this.reviewDraft(reply.text, 'comment');
@@ -1105,12 +1107,11 @@ Return JSON: {"title": "...", "content": "..."}`;
             textPreview: reviewed.slice(0, 120),
             karmaAtTime: karma,
           });
+          totalReplies++;
         }
-        totalReplies++;
         await new Promise((r) => setTimeout(r, 20000));
       }
 
-      // Mark notifications read for this post
       await this.markPostRead(activity.post_id);
     }
 
@@ -1364,7 +1365,6 @@ or {"replies": []} if nothing deserves a reply.`;
    */
   private async updateCommentEngagement(): Promise<void> {
     const perfLog = this.loadPerformanceLog();
-    const SIX_HOURS = 6 * 60 * 60 * 1000;
     const now = Date.now();
 
     // Find entries that have a commentId, are within 6h, and haven't been scored yet
@@ -1372,7 +1372,7 @@ or {"replies": []} if nothing deserves a reply.`;
       (e) =>
         e.commentId &&
         e.commentUpvotes === undefined &&
-        now - new Date(e.postedAt).getTime() < SIX_HOURS,
+        now - new Date(e.postedAt).getTime() < COMMENT_ENGAGEMENT_WINDOW_MS,
     );
 
     if (toCheck.length === 0) return;
