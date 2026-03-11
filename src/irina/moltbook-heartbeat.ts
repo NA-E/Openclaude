@@ -273,6 +273,25 @@ interface CommentsResponse {
   comments: FeedComment[];
 }
 
+interface SearchResult {
+  id: string;
+  type: string;
+  title?: string;
+  content?: string;
+  upvotes?: number;
+  created_at?: string;
+  author?: { id: string; name: string };
+  submolt?: { id: string; name: string; display_name: string };
+  post_id?: string;
+}
+
+interface SearchResponse {
+  success: boolean;
+  results: SearchResult[];
+  count: number;
+  has_more: boolean;
+}
+
 interface EngagementDecision {
   action: 'skip' | 'engage';
   comments?: Array<{ postId: string; text: string }>;
@@ -305,6 +324,7 @@ interface PerformanceEntry {
   textPreview: string;    // first 120 chars of what was posted
   postedAt: string;       // ISO timestamp
   karmaAtTime: number;    // karma when this was posted (delta to next = engagement signal)
+  commentUpvotes?: number;  // upvotes on our comment (fetched on next check-in)
 }
 
 interface PerformanceLog {
@@ -312,6 +332,8 @@ interface PerformanceLog {
   entries: PerformanceEntry[];
   /** Post IDs Irina has already commented on — filtered out each heartbeat to avoid double-commenting */
   commentedPostIds: string[];
+  /** ISO date (YYYY-MM-DD) of last strategic upvote run — limit to once per heartbeat */
+  lastUpvoteRun?: string;
 }
 
 // ─── Class ────────────────────────────────────────────────────────────────────
@@ -367,6 +389,12 @@ export class MoltbookHeartbeat {
 
     logger.info('MoltbookHB', 'Checking in to Moltbook...');
 
+    // Update engagement metrics for recent comments in the background
+    // (non-blocking — runs in parallel while we fetch the feed)
+    const engagementUpdate = this.updateCommentEngagement().catch((err) => {
+      logger.warn('MoltbookHB', `Comment engagement update failed: ${err instanceof Error ? err.message : String(err)}`);
+    });
+
     const home = await moltbookFetch('/home') as HomeResponse;
     const karma = home.your_account?.karma ?? 0;
     const unread = home.your_account?.unread_notification_count ?? 0;
@@ -419,10 +447,19 @@ export class MoltbookHeartbeat {
         allPosts.push(p);
       }
     }
-    const posts = allPosts.slice(0, 20);
+
+    // Augment feed with keyword-search posts — finds niche conversations matching
+    // current build context that may not appear in hot/rising/niche feeds.
+    const buildContext = buildBuildContext();
+    const keywordPosts = await this.searchForKeywordPosts(buildContext, seenIds);
+    allPosts.push(...keywordPosts);
+
+    const posts = allPosts.slice(0, 25);
 
     if (posts.length === 0) {
-      logger.info('MoltbookHB', 'No posts found, skipping');
+      logger.info('MoltbookHB', 'No posts found, running upvotes only');
+      await this.runStrategicUpvotes(hotData.posts ?? []);
+      await engagementUpdate;
       this.saveLastKarma(karma);
       return;
     }
@@ -435,15 +472,22 @@ export class MoltbookHeartbeat {
     if (eligiblePosts.length === 0) {
       logger.info('MoltbookHB', 'All feed posts already commented on, skipping engagement');
       await this.processReplyOpportunities(home, karma);
+      // Still run upvotes even when we have nothing to say — maintain presence
+      await this.runStrategicUpvotes(hotData.posts ?? []);
+      await engagementUpdate;
       this.saveLastKarma(karma);
       return;
     }
 
-    const buildContext = buildBuildContext();
+    // buildContext was already computed for keyword search above
     const decision = await this.decideEngagement(eligiblePosts, buildContext, performanceContext);
 
     if (!decision || decision.action === 'skip') {
       logger.info('MoltbookHB', 'Nothing relevant to add this check-in, staying quiet');
+      // Still run upvotes and reply checks even when skipping comments
+      await this.processReplyOpportunities(home, karma);
+      await this.runStrategicUpvotes(hotData.posts ?? []);
+      await engagementUpdate;
       this.saveLastKarma(karma);
       return;
     }
@@ -476,6 +520,12 @@ export class MoltbookHeartbeat {
 
     // Process reply opportunities from notifications on our own posts
     const repliesPosted = await this.processReplyOpportunities(home, karma);
+
+    // Strategic upvotes — after our own posting to not bias the feed state
+    await this.runStrategicUpvotes(hotData.posts ?? []);
+
+    // Await engagement update (started at top of check-in)
+    await engagementUpdate;
 
     // Save current karma for next delta calculation
     this.saveLastKarma(karma);
@@ -940,7 +990,11 @@ Return JSON: {"title": "...", "content": "..."}`;
       const deltaNote = isLatest && currentKarmaDelta !== 0
         ? ` → karma ${currentKarmaDelta > 0 ? '+' : ''}${currentKarmaDelta} since this`
         : '';
-      return `[${e.type} ${age}m ago] "${e.textPreview.slice(0, 80)}..."${deltaNote}`;
+      // Include per-comment upvote data when available — helps learn what resonates
+      const upvoteNote = e.commentUpvotes !== undefined
+        ? ` [comment upvotes: ${e.commentUpvotes}]`
+        : '';
+      return `[${e.type} ${age}m ago] "${e.textPreview.slice(0, 80)}..."${upvoteNote}${deltaNote}`;
     });
 
     return lines.join('\n') + (currentKarmaDelta === 0
@@ -1154,6 +1208,198 @@ or {"replies": []} if nothing deserves a reply.`;
       await moltbookFetch(`/notifications/read-by-post/${postId}`, { method: 'POST' });
     } catch {
       // Non-critical — don't let this block anything
+    }
+  }
+
+  // ─── Strategic upvoting ────────────────────────────────────────────────────
+
+  /**
+   * Upvote top posts from the hot feed and their best comments.
+   * Runs once per heartbeat (guarded by lastUpvoteRun timestamp).
+   * Goals:
+   *  - Increases Irina's activity visibility on the platform
+   *  - Builds goodwill with active authors
+   *  - Costs nothing, helps surface quality content
+   *
+   * Limits: max 5 post upvotes + 3 comment upvotes per heartbeat to stay
+   * within reasonable activity levels and avoid looking like a bot.
+   */
+  private async runStrategicUpvotes(hotPosts: MoltbookPost[]): Promise<void> {
+    const perfLog = this.loadPerformanceLog();
+    const today = new Date().toISOString().slice(0, 16); // YYYY-MM-DDTHH:MM — once per 45-min slot
+    if (perfLog.lastUpvoteRun === today) {
+      logger.info('MoltbookHB', 'Upvote run already done this slot, skipping');
+      return;
+    }
+
+    // Upvote top hot posts (skip our own posts)
+    const postsToUpvote = hotPosts
+      .filter((p) => p.author.name !== 'irina_builds')
+      .slice(0, 5);
+
+    let postUps = 0;
+    for (const post of postsToUpvote) {
+      try {
+        await moltbookFetch(`/posts/${post.id}/upvote`, { method: 'POST' });
+        postUps++;
+        await new Promise((r) => setTimeout(r, 3000));
+      } catch (err) {
+        logger.warn('MoltbookHB', `Post upvote failed for ${post.id}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+
+    // Upvote the best comment on the top hot post (highest upvotes, not spam)
+    let commentUps = 0;
+    if (postsToUpvote.length > 0) {
+      try {
+        const topPost = postsToUpvote[0];
+        const commentsData = await moltbookFetch(
+          `/posts/${topPost.id}/comments?sort=best&limit=10`,
+        ) as CommentsResponse;
+
+        const topComments = (commentsData.comments ?? [])
+          .filter((c) => !c.is_deleted && !c.is_spam && c.author.name !== 'irina_builds')
+          .slice(0, 3);
+
+        for (const c of topComments) {
+          try {
+            await moltbookFetch(`/comments/${c.id}/upvote`, { method: 'POST' });
+            commentUps++;
+            await new Promise((r) => setTimeout(r, 2000));
+          } catch (err) {
+            logger.warn('MoltbookHB', `Comment upvote failed: ${err instanceof Error ? err.message : String(err)}`);
+          }
+        }
+      } catch (err) {
+        logger.warn('MoltbookHB', `Could not fetch comments for upvoting: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+
+    // Persist the run timestamp
+    perfLog.lastUpvoteRun = today;
+    writeFileSync(PERFORMANCE_LOG_PATH, JSON.stringify(perfLog, null, 2));
+    logger.info('MoltbookHB', `Strategic upvotes done: ${postUps} posts, ${commentUps} comments`);
+  }
+
+  // ─── Keyword search post discovery ─────────────────────────────────────────
+
+  /**
+   * Extracts 2-3 key technical terms from the build context and searches
+   * for posts matching those terms. Returns posts not already in the
+   * main feed — surfaces niche conversations in less-trafficked submolts.
+   */
+  private async searchForKeywordPosts(
+    buildContext: string,
+    existingPostIds: Set<string>,
+  ): Promise<MoltbookPost[]> {
+    if (!buildContext) return [];
+
+    // Extract keywords using Claude — pick 2-3 specific technical terms
+    // from the build context that are most likely to match Moltbook posts
+    const client = new SubprocessClient();
+
+    try {
+      const response = await client.messages.create({
+        model: 'claude-sonnet-4-6',
+        max_tokens: 80,
+        system: 'Extract 2-3 short search keywords from the build context. Return ONLY a JSON array of strings, e.g. ["heartbeat", "token refresh"]. Choose terms specific enough to find relevant technical posts but common enough to get results.',
+        messages: [{ role: 'user', content: `Build context:\n${buildContext.slice(0, 1000)}\n\nReturn 2-3 search keywords as JSON array.` }],
+      });
+
+      const text = (response.content[0]?.text ?? '').trim();
+      const arrMatch = text.match(/\[[\s\S]*?\]/);
+      if (!arrMatch) return [];
+
+      const keywords: string[] = JSON.parse(arrMatch[0]);
+      if (!Array.isArray(keywords) || keywords.length === 0) return [];
+
+      const found: MoltbookPost[] = [];
+      for (const kw of keywords.slice(0, 3)) {
+        try {
+          const results = await moltbookFetch(
+            `/search?q=${encodeURIComponent(kw)}&limit=5`,
+          ) as SearchResponse;
+
+          for (const r of (results.results ?? [])) {
+            if (r.type !== 'post') continue;
+            const postId = r.post_id ?? r.id;
+            if (existingPostIds.has(postId)) continue;
+
+            // Convert search result to MoltbookPost shape for unified handling
+            found.push({
+              id: postId,
+              title: r.title ?? '',
+              content: r.content?.replace(/<\/?mark>/g, '') ?? '',
+              author: { name: r.author?.name ?? 'unknown' },
+              upvotes: r.upvotes ?? 0,
+              comment_count: 0,
+              created_at: r.created_at ?? new Date().toISOString(),
+              submolt: r.submolt ?? null,
+            });
+            existingPostIds.add(postId);
+          }
+        } catch (err) {
+          logger.warn('MoltbookHB', `Search failed for "${kw}": ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+
+      if (found.length > 0) {
+        logger.info('MoltbookHB', `Keyword search found ${found.length} new posts for terms: ${keywords.join(', ')}`);
+      }
+      return found;
+    } catch (err) {
+      logger.warn('MoltbookHB', `Keyword extraction failed: ${err instanceof Error ? err.message : String(err)}`);
+      return [];
+    }
+  }
+
+  // ─── Own-comment engagement check ─────────────────────────────────────────
+
+  /**
+   * For recent comments/replies Irina posted, re-fetch their post's comment list
+   * and update `commentUpvotes` in the performance log. This gives per-comment
+   * signal rather than just a global karma delta, helping future engagement decisions.
+   *
+   * Only checks comments posted in the last 6 hours (fresh enough to have gotten votes).
+   */
+  private async updateCommentEngagement(): Promise<void> {
+    const perfLog = this.loadPerformanceLog();
+    const SIX_HOURS = 6 * 60 * 60 * 1000;
+    const now = Date.now();
+
+    // Find entries that have a commentId, are within 6h, and haven't been scored yet
+    const toCheck = perfLog.entries.filter(
+      (e) =>
+        e.commentId &&
+        e.commentUpvotes === undefined &&
+        now - new Date(e.postedAt).getTime() < SIX_HOURS,
+    );
+
+    if (toCheck.length === 0) return;
+
+    let updated = 0;
+    for (const entry of toCheck.slice(0, 3)) {
+      if (!entry.commentId) continue;
+      try {
+        // Fetch comments from the post and find ours by ID
+        const data = await moltbookFetch(
+          `/posts/${entry.postId}/comments?sort=new&limit=50`,
+        ) as CommentsResponse;
+
+        const mine = (data.comments ?? []).find((c) => c.id === entry.commentId);
+        if (mine !== undefined) {
+          entry.commentUpvotes = mine.upvotes;
+          updated++;
+        }
+        await new Promise((r) => setTimeout(r, 1500));
+      } catch (err) {
+        logger.warn('MoltbookHB', `Comment engagement check failed for ${entry.commentId}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+
+    if (updated > 0) {
+      writeFileSync(PERFORMANCE_LOG_PATH, JSON.stringify(perfLog, null, 2));
+      logger.info('MoltbookHB', `Updated comment engagement for ${updated} entries`);
     }
   }
 
