@@ -25,6 +25,7 @@ import { logger } from '../utils/logger.js';
 
 const SESSION_SUMMARY_PATH = join(process.cwd(), 'last-session-summary.md');
 const POSTED_TOPICS_PATH = join(process.cwd(), 'moltbook-posted-topics.json');
+const PERFORMANCE_LOG_PATH = join(process.cwd(), 'moltbook-performance.json');
 // Newsletter topics backlog — path from session-summary skill
 const NEWSLETTER_PATH = 'E:/1.Claude Code/Build with AI/newsletters from templates/newsletter-topics.md';
 const API_BASE = 'https://www.moltbook.com/api/v1';
@@ -230,6 +231,21 @@ interface PostedTopics {
   posted: number[];
 }
 
+interface PerformanceEntry {
+  type: 'comment' | 'reply' | 'post';
+  postId: string;
+  postTitle: string;
+  commentId?: string;
+  textPreview: string;    // first 120 chars of what was posted
+  postedAt: string;       // ISO timestamp
+  karmaAtTime: number;    // karma when this was posted (delta to next = engagement signal)
+}
+
+interface PerformanceLog {
+  lastKarma: number;
+  entries: PerformanceEntry[];
+}
+
 // ─── Class ────────────────────────────────────────────────────────────────────
 
 export class MoltbookHeartbeat {
@@ -279,6 +295,14 @@ export class MoltbookHeartbeat {
     const unread = home.your_account?.unread_notification_count ?? 0;
     logger.info('MoltbookHB', `karma: ${karma}, unread: ${unread}`);
 
+    // Snapshot karma delta and build performance context for this check-in
+    const perfLog = this.loadPerformanceLog();
+    const karmaDelta = karma - perfLog.lastKarma;
+    if (karmaDelta !== 0) {
+      logger.info('MoltbookHB', `Karma delta since last check-in: ${karmaDelta > 0 ? '+' : ''}${karmaDelta}`);
+    }
+    const performanceContext = this.buildPerformanceContext(perfLog, karmaDelta);
+
     const [hotData, risingData] = await Promise.all([
       moltbookFetch('/posts?sort=hot&limit=10') as Promise<PostsResponse>,
       moltbookFetch('/posts?sort=rising&limit=5') as Promise<PostsResponse>,
@@ -291,11 +315,12 @@ export class MoltbookHeartbeat {
 
     if (posts.length === 0) {
       logger.info('MoltbookHB', 'No posts found, skipping');
+      this.saveLastKarma(karma);
       return;
     }
 
     const buildContext = buildBuildContext();
-    const decision = await this.decideEngagement(posts, buildContext);
+    const decision = await this.decideEngagement(posts, buildContext, performanceContext);
 
     if (!decision || decision.action === 'skip') {
       logger.info('MoltbookHB', 'Nothing relevant to add this check-in, staying quiet');
@@ -306,7 +331,18 @@ export class MoltbookHeartbeat {
 
     for (const comment of (decision.comments ?? [])) {
       const reviewed = await this.reviewDraft(comment.text, 'comment');
-      await this.postComment(comment.postId, reviewed);
+      const targetPost = posts.find((p) => p.id === comment.postId);
+      const commentId = await this.postComment(comment.postId, reviewed);
+      if (commentId) {
+        this.logAction({
+          type: 'comment',
+          postId: comment.postId,
+          postTitle: targetPost?.title ?? comment.postId,
+          commentId,
+          textPreview: reviewed.slice(0, 120),
+          karmaAtTime: karma,
+        });
+      }
       commentsPosted++;
       await new Promise((r) => setTimeout(r, 25000));
     }
@@ -314,11 +350,14 @@ export class MoltbookHeartbeat {
     // If the feed inspired an original post, write it
     if (decision.newPost) {
       const reviewed = await this.reviewDraft(decision.newPost.content, 'post');
-      await this.createPost(decision.newPost.title, reviewed);
+      await this.createPost(decision.newPost.title, reviewed, karma);
     }
 
     // Process reply opportunities from notifications on our own posts
-    const repliesPosted = await this.processReplyOpportunities(home);
+    const repliesPosted = await this.processReplyOpportunities(home, karma);
+
+    // Save current karma for next delta calculation
+    this.saveLastKarma(karma);
 
     logger.info('MoltbookHB', `Check-in complete. Comments: ${commentsPosted}, replies: ${repliesPosted}, new post: ${decision.newPost ? 'yes' : 'no'}`);
   }
@@ -328,6 +367,7 @@ export class MoltbookHeartbeat {
   private async decideEngagement(
     posts: MoltbookPost[],
     buildContext: string,
+    performanceContext: string,
   ): Promise<EngagementDecision | null> {
     const client = new SubprocessClient();
 
@@ -369,7 +409,10 @@ OR
 
 Both "comments" and "newPost" are optional. Any combination is valid including just one of them.`;
 
-    const userPrompt = `Here is what I have been building recently:\n\n${buildContext}\n\n---\n\nHere are the current posts on Moltbook:\n\n${postSummaries}\n\nDecide whether to engage. If nothing connects to what I actually built, output {"action": "skip"}`;
+    const perfSection = performanceContext
+      ? `\n\n=== WHAT HAS WORKED / NOT WORKED ===\n${performanceContext}`
+      : '';
+    const userPrompt = `Here is what I have been building recently:\n\n${buildContext}${perfSection}\n\n---\n\nHere are the current posts on Moltbook:\n\n${postSummaries}\n\nDecide whether to engage. If nothing connects to what I actually built, output {"action": "skip"}`;
 
     try {
       const response = await client.messages.create({
@@ -448,7 +491,7 @@ If the draft is already solid, return it unchanged.`;
 
   // ─── Create post ───────────────────────────────────────────────────────────
 
-  private async createPost(title: string, content: string): Promise<void> {
+  private async createPost(title: string, content: string, karma = 0): Promise<void> {
     logger.info('MoltbookHB', `Creating post: "${title.slice(0, 60)}..."`);
 
     const result = await moltbookFetch('/posts', {
@@ -467,7 +510,17 @@ If the draft is already solid, return it unchanged.`;
       logger.info('MoltbookHB', `Post verified: ${solved}`);
     }
 
-    logger.info('MoltbookHB', `Post created: ${result.post?.id ?? 'unknown id'}`);
+    const postId = result.post?.id ?? '';
+    logger.info('MoltbookHB', `Post created: ${postId}`);
+    if (postId) {
+      this.logAction({
+        type: 'post',
+        postId,
+        postTitle: title,
+        textPreview: content.slice(0, 120),
+        karmaAtTime: karma,
+      });
+    }
   }
 
   // ─── Newsletter-to-post pipeline (every 4 hours) ───────────────────────────
@@ -585,6 +638,53 @@ Return JSON: {"title": "...", "content": "..."}`;
     }
   }
 
+  // ─── Performance tracking & learning loop ─────────────────────────────────
+
+  private loadPerformanceLog(): PerformanceLog {
+    if (!existsSync(PERFORMANCE_LOG_PATH)) return { lastKarma: 0, entries: [] };
+    try {
+      return JSON.parse(readFileSync(PERFORMANCE_LOG_PATH, 'utf8')) as PerformanceLog;
+    } catch {
+      return { lastKarma: 0, entries: [] };
+    }
+  }
+
+  private saveLastKarma(karma: number): void {
+    const log = this.loadPerformanceLog();
+    log.lastKarma = karma;
+    writeFileSync(PERFORMANCE_LOG_PATH, JSON.stringify(log, null, 2));
+  }
+
+  private logAction(entry: Omit<PerformanceEntry, 'postedAt'>): void {
+    const log = this.loadPerformanceLog();
+    log.entries.push({ ...entry, postedAt: new Date().toISOString() });
+    // Keep last 50 entries — enough signal without bloating
+    if (log.entries.length > 50) log.entries = log.entries.slice(-50);
+    writeFileSync(PERFORMANCE_LOG_PATH, JSON.stringify(log, null, 2));
+  }
+
+  /**
+   * Builds a compact performance summary to pass to Claude.
+   * Shows the last 8 actions and the karma signal since each one.
+   */
+  private buildPerformanceContext(log: PerformanceLog, currentKarmaDelta: number): string {
+    if (log.entries.length === 0) return '';
+
+    const recent = log.entries.slice(-8);
+    const lines = recent.map((e, i) => {
+      const age = Math.round((Date.now() - new Date(e.postedAt).getTime()) / 60000);
+      const isLatest = i === recent.length - 1;
+      const deltaNote = isLatest && currentKarmaDelta !== 0
+        ? ` → karma ${currentKarmaDelta > 0 ? '+' : ''}${currentKarmaDelta} since this`
+        : '';
+      return `[${e.type} ${age}m ago] "${e.textPreview.slice(0, 80)}..."${deltaNote}`;
+    });
+
+    return lines.join('\n') + (currentKarmaDelta === 0
+      ? '\n(karma unchanged since last check-in)'
+      : '');
+  }
+
   // ─── Newsletter topic parsing ──────────────────────────────────────────────
 
   private parseNewsletterTopics(): NewsletterTopic[] {
@@ -650,7 +750,7 @@ Return JSON: {"title": "...", "content": "..."}`;
    * asks Claude which deserve a reply, and posts them.
    * Returns the number of replies posted.
    */
-  private async processReplyOpportunities(home: HomeResponse): Promise<number> {
+  private async processReplyOpportunities(home: HomeResponse, karma = 0): Promise<number> {
     const activities = home.activity_on_your_posts ?? [];
     if (activities.length === 0) return 0;
 
@@ -678,7 +778,17 @@ Return JSON: {"title": "...", "content": "..."}`;
 
       for (const reply of replies) {
         const reviewed = await this.reviewDraft(reply.text, 'comment');
-        await this.postReply(activity.post_id, reply.commentId, reviewed);
+        const replyId = await this.postReply(activity.post_id, reply.commentId, reviewed);
+        if (replyId) {
+          this.logAction({
+            type: 'reply',
+            postId: activity.post_id,
+            postTitle: activity.post_title,
+            commentId: replyId,
+            textPreview: reviewed.slice(0, 120),
+            karmaAtTime: karma,
+          });
+        }
         totalReplies++;
         await new Promise((r) => setTimeout(r, 20000));
       }
@@ -753,7 +863,7 @@ or {"replies": []} if nothing deserves a reply.`;
     }
   }
 
-  private async postReply(postId: string, parentCommentId: string, text: string): Promise<void> {
+  private async postReply(postId: string, parentCommentId: string, text: string): Promise<string | null> {
     logger.info('MoltbookHB', `Replying to comment ${parentCommentId} on post ${postId}`);
 
     const result = await moltbookFetch(`/posts/${postId}/comments`, {
@@ -763,7 +873,7 @@ or {"replies": []} if nothing deserves a reply.`;
 
     if (!result.success) {
       logger.error('MoltbookHB', `Reply failed on comment ${parentCommentId}`);
-      return;
+      return null;
     }
 
     const v = result.comment?.verification;
@@ -771,6 +881,8 @@ or {"replies": []} if nothing deserves a reply.`;
       const solved = await verifyContent(v.verification_code, v.challenge_text);
       logger.info('MoltbookHB', `Reply verified: ${solved}`);
     }
+
+    return result.comment?.id ?? null;
   }
 
   private async markPostRead(postId: string): Promise<void> {
@@ -783,7 +895,7 @@ or {"replies": []} if nothing deserves a reply.`;
 
   // ─── Post comment ──────────────────────────────────────────────────────────
 
-  private async postComment(postId: string, text: string): Promise<void> {
+  private async postComment(postId: string, text: string): Promise<string | null> {
     logger.info('MoltbookHB', `Commenting on post ${postId}`);
 
     const result = await moltbookFetch(`/posts/${postId}/comments`, {
@@ -793,7 +905,7 @@ or {"replies": []} if nothing deserves a reply.`;
 
     if (!result.success) {
       logger.error('MoltbookHB', `Comment failed on ${postId}`);
-      return;
+      return null;
     }
 
     const v = result.comment?.verification;
@@ -801,5 +913,7 @@ or {"replies": []} if nothing deserves a reply.`;
       const solved = await verifyContent(v.verification_code, v.challenge_text);
       logger.info('MoltbookHB', `Comment verified: ${solved}`);
     }
+
+    return result.comment?.id ?? null;
   }
 }
