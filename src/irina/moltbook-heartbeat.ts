@@ -202,6 +202,9 @@ interface MoltbookPost {
   upvotes: number;
   comment_count: number;
   created_at: string;
+  /** Can be a string name or an object with id/name/display_name depending on endpoint */
+  submolt?: string | { id?: string; name?: string; display_name?: string } | null;
+  submolt_name?: string;
 }
 
 interface PostsResponse {
@@ -353,15 +356,16 @@ export class MoltbookHeartbeat {
     }
     const performanceContext = this.buildPerformanceContext(perfLog, karmaDelta);
 
-    const [hotData, risingData, buildsData, agentsData] = (await Promise.all([
+    const [hotData, risingData, buildsData, agentsData, followingData] = (await Promise.all([
       moltbookFetch('/posts?sort=hot&limit=10'),
       moltbookFetch('/posts?sort=rising&limit=5'),
       moltbookFetch('/posts?sort=hot&limit=5&submolt=builds'),
       moltbookFetch('/posts?sort=hot&limit=5&submolt=agents'),
-    ])) as [PostsResponse, PostsResponse, PostsResponse, PostsResponse];
+      moltbookFetch('/feed?filter=following&limit=5'),
+    ])) as [PostsResponse, PostsResponse, PostsResponse, PostsResponse, PostsResponse];
 
-    // Combine global feed with niche submolt feeds, deduplicate by ID
-    // Niche posts are appended after global so Claude sees the broad context first
+    // Combine global feed with niche submolt + following feeds, deduplicate by ID.
+    // Following feed comes last so it surfaces without displacing broad context.
     const seenIds = new Set<string>();
     const allPosts: MoltbookPost[] = [];
     for (const p of [
@@ -369,13 +373,14 @@ export class MoltbookHeartbeat {
       ...(risingData.posts ?? []),
       ...(buildsData.posts ?? []),
       ...(agentsData.posts ?? []),
+      ...(followingData.posts ?? []),
     ]) {
       if (!seenIds.has(p.id)) {
         seenIds.add(p.id);
         allPosts.push(p);
       }
     }
-    const posts = allPosts.slice(0, 16);
+    const posts = allPosts.slice(0, 18);
 
     if (posts.length === 0) {
       logger.info('MoltbookHB', 'No posts found, skipping');
@@ -449,7 +454,19 @@ export class MoltbookHeartbeat {
 
     const postSummaries = posts
       .slice(0, 8)
-      .map((p, i) => `[${i}] POST ID: ${p.id}\nAUTHOR: ${p.author.name}\nTITLE: ${p.title}\nCONTENT (first 600 chars): ${(p.content ?? '').slice(0, 600)}`)
+      .map((p, i) => {
+        // submolt can be a string name or an object {name, display_name}
+        const submoltName = typeof p.submolt === 'object'
+          ? (p.submolt as { name?: string } | null)?.name ?? 'general'
+          : (p.submolt as string | undefined) ?? p.submolt_name ?? 'general';
+        return [
+          `[${i}] POST ID: ${p.id}`,
+          `SUBMOLT: ${submoltName}`,
+          `AUTHOR: ${p.author.name} | UPVOTES: ${p.upvotes} | COMMENTS: ${p.comment_count}`,
+          `TITLE: ${p.title}`,
+          `CONTENT (first 600 chars): ${(p.content ?? '').slice(0, 600)}`,
+        ].join('\n');
+      })
       .join('\n\n---\n\n');
 
     const submoltList = Object.keys(SUBMOLTS)
@@ -588,11 +605,15 @@ If the draft is already solid, return it unchanged.`;
     submoltKey = 'general',
   ): Promise<void> {
     const submolt = SUBMOLTS[submoltKey] ?? SUBMOLTS['general'];
-    logger.info('MoltbookHB', `Creating post in r/${submolt.name}: "${title.slice(0, 60)}..."`);
+    // Final deterministic sanitization pass — catches any leaked internals that
+    // the Claude editor review missed (e.g. file paths in examples or code refs)
+    const safeContent = sanitizeBuildContext(content);
+    const safeTitle = sanitizeBuildContext(title);
+    logger.info('MoltbookHB', `Creating post in r/${submolt.name}: "${safeTitle.slice(0, 60)}..."`);
 
     const result = await moltbookFetch('/posts', {
       method: 'POST',
-      body: JSON.stringify({ title, content, submolt: submolt.id, submolt_name: submolt.name }),
+      body: JSON.stringify({ title: safeTitle, content: safeContent, submolt: submolt.id, submolt_name: submolt.name }),
     }) as CreatePostResponse;
 
     if (!result.success) {
@@ -994,10 +1015,11 @@ or {"replies": []} if nothing deserves a reply.`;
 
   private async postReply(postId: string, parentCommentId: string, text: string): Promise<string | null> {
     logger.info('MoltbookHB', `Replying to comment ${parentCommentId} on post ${postId}`);
+    const safeText = sanitizeBuildContext(text);
 
     const result = await moltbookFetch(`/posts/${postId}/comments`, {
       method: 'POST',
-      body: JSON.stringify({ content: text, parent_id: parentCommentId }),
+      body: JSON.stringify({ content: safeText, parent_id: parentCommentId }),
     }) as CommentResponse;
 
     if (!result.success) {
@@ -1026,10 +1048,11 @@ or {"replies": []} if nothing deserves a reply.`;
 
   private async postComment(postId: string, text: string): Promise<string | null> {
     logger.info('MoltbookHB', `Commenting on post ${postId}`);
+    const safeText = sanitizeBuildContext(text);
 
     const result = await moltbookFetch(`/posts/${postId}/comments`, {
       method: 'POST',
-      body: JSON.stringify({ content: text }),
+      body: JSON.stringify({ content: safeText }),
     }) as CommentResponse;
 
     if (!result.success) {
