@@ -569,7 +569,7 @@ export class MoltbookHeartbeat {
     // If the feed inspired an original post, write it — but only if we haven't
     // posted in the last 8 hours (prevents burst: TIL + newsletter + feed post same morning)
     if (decision.newPost) {
-      const eightHoursAgo = Date.now() - 8 * 60 * 60 * 1000;
+      const eightHoursAgo = nowMs - 8 * 60 * 60 * 1000;
       const recentPost = perfLog.entries.some(
         (e) => e.type === 'post' && new Date(e.postedAt).getTime() > eightHoursAgo,
       );
