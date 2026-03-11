@@ -735,6 +735,17 @@ export class Gateway {
       const result = await postTweet(text);
       res.json(result);
     });
+
+    // Irina Moltbook manual check-in trigger — POST /api/irina/moltbook-checkin
+    this.app.post('/api/irina/moltbook-checkin', async (_req, res) => {
+      if (!this.moltbookHeartbeat) {
+        return res.status(503).json({ error: 'Moltbook heartbeat not initialized' });
+      }
+      this.moltbookHeartbeat.checkIn().catch((err) => {
+        logger.error('Gateway', 'Manual Moltbook check-in error', err);
+      });
+      res.json({ ok: true, message: 'Check-in triggered (running in background)' });
+    });
   }
 
   // ─── Status ───────────────────────────────────────────────────
