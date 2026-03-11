@@ -325,6 +325,8 @@ interface PerformanceEntry {
   postTitle: string;
   /** For post entries: how many comments Irina's post received (updated on subsequent check-ins) */
   incomingComments?: number;
+  /** Feed source the engagement came from (HOT/CONTROVERSIAL/NICHE-NEW/SEARCH/etc.) */
+  source?: string;
   commentId?: string;
   textPreview: string;    // first 120 chars of what was posted
   postedAt: string;       // ISO timestamp
@@ -546,6 +548,7 @@ export class MoltbookHeartbeat {
           commentId,
           textPreview: reviewed.slice(0, 120),
           karmaAtTime: karma,
+          source: postSourceMap.get(comment.postId),
         });
         commentsPosted++;
       }
@@ -939,14 +942,16 @@ Return JSON: {"title": "...", "content": "...", "submolt": "<submolt_key>"}`;
     const home = await moltbookFetch('/home') as HomeResponse;
     const karma = home.your_account?.karma ?? 0;
 
-    // Check if we already posted a TIL today (avoid duplicate daily posts)
-    const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
-    // Simple approach: check entries for a post with "TIL" text preview posted today
-    const alreadyPostedTILToday = perfLog.entries.some(
-      (e) => e.type === 'post' && e.postedAt.startsWith(today) && e.textPreview.startsWith('TIL'),
+    // Check if we already posted a TIL in the last 2 days (avoids near-duplicate topics).
+    // Use postTitle (starts with "TIL") not textPreview — content doesn't start with TIL.
+    const twoDaysAgo = Date.now() - 2 * 24 * 60 * 60 * 1000;
+    const alreadyPostedTILRecently = perfLog.entries.some(
+      (e) => e.type === 'post'
+        && new Date(e.postedAt).getTime() > twoDaysAgo
+        && e.postTitle.startsWith('TIL'),
     );
-    if (alreadyPostedTILToday) {
-      logger.info('MoltbookHB', 'TIL already posted today, skipping');
+    if (alreadyPostedTILRecently) {
+      logger.info('MoltbookHB', 'TIL already posted in last 2 days, skipping');
       return;
     }
 
@@ -999,6 +1004,14 @@ Return JSON: {"title": "...", "content": "..."}`;
       const draft = JSON.parse(jsonMatch[0]) as { title?: string; content?: string };
       if (!draft.title || !draft.content) return;
 
+      // Quality gate: check specificity before posting.
+      // Only post TILs that are concrete enough to teach other builders something.
+      const qualityOk = await this.checkTILQuality(draft.title, draft.content, client);
+      if (!qualityOk) {
+        logger.info('MoltbookHB', 'TIL draft failed quality gate (too generic), skipping');
+        return;
+      }
+
       // Enforce TIL prefix in title
       const title = draft.title.startsWith('TIL') ? draft.title : `TIL ${draft.title}`;
       const reviewed = await this.reviewDraft(draft.content, 'post');
@@ -1007,6 +1020,39 @@ Return JSON: {"title": "...", "content": "..."}`;
       logger.info('MoltbookHB', `Daily TIL posted: "${title.slice(0, 70)}"`);
     } catch (err) {
       logger.error('MoltbookHB', `TIL post failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  /**
+   * Quick quality gate for TIL posts. Runs one Claude call to check if the draft
+   * is specific enough to teach other builders something concrete.
+   * Returns true if it passes (score >= 7/10), false to skip.
+   */
+  private async checkTILQuality(title: string, content: string, client: SubprocessClient): Promise<boolean> {
+    try {
+      const response = await client.messages.create({
+        model: 'claude-sonnet-4-6',
+        max_tokens: 60,
+        system: 'You are a quality reviewer for technical blog posts. Output only a JSON object.',
+        messages: [{
+          role: 'user',
+          content: `Rate the specificity of this TIL post for an audience of AI builders. Is it concrete enough that a reader learns one actionable fact or insight?
+
+Title: ${title}
+Content: ${content.slice(0, 400)}
+
+Score 1-10 where 10 = very specific, teaches a concrete fact. Below 7 = too vague/generic.
+Output: {"score": <number>}`,
+        }],
+      });
+
+      const text = (response.content[0]?.text ?? '').trim();
+      const match = text.match(/"score"\s*:\s*(\d+)/);
+      const score = match ? parseInt(match[1], 10) : 8; // default pass if parse fails
+      logger.info('MoltbookHB', `TIL quality score: ${score}/10`);
+      return score >= 7;
+    } catch {
+      return true; // fail-open: if check errors, don't block the post
     }
   }
 
@@ -1066,7 +1112,9 @@ Return JSON: {"title": "...", "content": "..."}`;
       const discussionNote = e.type === 'post' && e.incomingComments !== undefined
         ? ` [${e.incomingComments} people commented back]`
         : '';
-      return `[${e.type} ${age}m ago] "${e.textPreview.slice(0, 80)}..."${upvoteNote}${discussionNote}${deltaNote}`;
+      // Show source so Claude can correlate feed origin with engagement outcomes
+      const sourceNote = e.source ? ` [from: ${e.source}]` : '';
+      return `[${e.type} ${age}m ago] "${e.textPreview.slice(0, 80)}..."${upvoteNote}${sourceNote}${discussionNote}${deltaNote}`;
     });
 
     return lines.join('\n') + (currentKarmaDelta === 0
