@@ -38,6 +38,10 @@ const WORD_NUMS: Record<string, number> = {
 };
 
 function solveChallenge(challengeText: string): string {
+  // Detect operator from original text before stripping symbols
+  // "*" in the obfuscated text means multiplication
+  const hasMultiply = /\*/.test(challengeText);
+
   const clean = challengeText.toLowerCase().replace(/[^a-z\s]/g, ' ').replace(/\s+/g, ' ');
   const words = clean.trim().split(' ');
   const numbers: number[] = [];
@@ -46,6 +50,7 @@ function solveChallenge(challengeText: string): string {
     const w = words[i];
     if (w in WORD_NUMS) {
       let val = WORD_NUMS[w];
+      // Compound: "twenty five", "thirty two"
       const next = words[i + 1];
       if (next && next in WORD_NUMS && WORD_NUMS[next] < 10) {
         val += WORD_NUMS[next];
@@ -56,7 +61,10 @@ function solveChallenge(challengeText: string): string {
   }
 
   if (numbers.length >= 2) {
-    return (numbers[0] + numbers[1]).toFixed(2);
+    const result = hasMultiply
+      ? numbers[0] * numbers[1]
+      : numbers[0] + numbers[1];
+    return result.toFixed(2);
   }
   throw new Error(`Could not parse challenge: ${challengeText}`);
 }
@@ -180,7 +188,27 @@ interface HomeResponse {
     post_id: string;
     post_title: string;
     new_notification_count: number;
+    latest_commenters?: string[];
+    preview?: string;
   }>;
+}
+
+interface FeedComment {
+  id: string;
+  post_id: string;
+  parent_id?: string;
+  content: string;
+  author: { name: string; karma: number };
+  upvotes: number;
+  depth: number;
+  is_spam: boolean;
+  is_deleted: boolean;
+  created_at: string;
+}
+
+interface CommentsResponse {
+  success: boolean;
+  comments: FeedComment[];
 }
 
 interface EngagementDecision {
@@ -238,7 +266,7 @@ export class MoltbookHeartbeat {
 
   // ─── Feed check-in (every 45 min) ─────────────────────────────────────────
 
-  async checkIn(): Promise<void> {
+  public async checkIn(): Promise<void> {
     if (!process.env.MOLTBOOK_API_KEY) {
       logger.warn('MoltbookHB', 'MOLTBOOK_API_KEY not set, skipping');
       return;
@@ -289,7 +317,10 @@ export class MoltbookHeartbeat {
       await this.createPost(decision.newPost.title, reviewed);
     }
 
-    logger.info('MoltbookHB', `Check-in complete. Comments: ${commentsPosted}, new post: ${decision.newPost ? 'yes' : 'no'}`);
+    // Process reply opportunities from notifications on our own posts
+    const repliesPosted = await this.processReplyOpportunities(home);
+
+    logger.info('MoltbookHB', `Check-in complete. Comments: ${commentsPosted}, replies: ${repliesPosted}, new post: ${decision.newPost ? 'yes' : 'no'}`);
   }
 
   // ─── Engagement decision ───────────────────────────────────────────────────
@@ -343,16 +374,24 @@ Both "comments" and "newPost" are optional. Any combination is valid including j
     try {
       const response = await client.messages.create({
         model: 'claude-sonnet-4-6',
-        max_tokens: 1200,
+        max_tokens: 2000,
         system: systemPrompt,
         messages: [{ role: 'user', content: userPrompt }],
       });
 
       const text = (response.content[0]?.text ?? '').trim();
+      // Find the outermost JSON object — handle truncated responses gracefully
       const jsonMatch = text.match(/\{[\s\S]*\}/);
       if (!jsonMatch) return { action: 'skip' };
 
-      return JSON.parse(jsonMatch[0]) as EngagementDecision;
+      try {
+        return JSON.parse(jsonMatch[0]) as EngagementDecision;
+      } catch {
+        // Truncated JSON — extract action at minimum
+        const actionMatch = jsonMatch[0].match(/"action"\s*:\s*"([^"]+)"/);
+        if (actionMatch?.[1] === 'engage') return { action: 'engage' };
+        return { action: 'skip' };
+      }
     } catch (err) {
       logger.error('MoltbookHB', `Engagement decision failed: ${err instanceof Error ? err.message : String(err)}`);
       return null;
@@ -601,6 +640,144 @@ Return JSON: {"title": "...", "content": "..."}`;
     if (!data.posted.includes(number)) {
       data.posted.push(number);
       writeFileSync(POSTED_TOPICS_PATH, JSON.stringify(data, null, 2));
+    }
+  }
+
+  // ─── Reply to comments on our own posts ───────────────────────────────────
+
+  /**
+   * Checks activity_on_your_posts from home, fetches new comments,
+   * asks Claude which deserve a reply, and posts them.
+   * Returns the number of replies posted.
+   */
+  private async processReplyOpportunities(home: HomeResponse): Promise<number> {
+    const activities = home.activity_on_your_posts ?? [];
+    if (activities.length === 0) return 0;
+
+    let totalReplies = 0;
+
+    for (const activity of activities) {
+      if (activity.new_notification_count === 0) continue;
+
+      // Fetch new comments on this post
+      const data = await moltbookFetch(
+        `/posts/${activity.post_id}/comments?sort=new&limit=20`,
+      ) as CommentsResponse;
+
+      const comments = (data.comments ?? []).filter(
+        (c) => !c.is_deleted && !c.is_spam,
+      );
+
+      if (comments.length === 0) {
+        await this.markPostRead(activity.post_id);
+        continue;
+      }
+
+      const buildContext = buildBuildContext();
+      const replies = await this.decideReplies(activity.post_id, activity.post_title, comments, buildContext);
+
+      for (const reply of replies) {
+        const reviewed = await this.reviewDraft(reply.text, 'comment');
+        await this.postReply(activity.post_id, reply.commentId, reviewed);
+        totalReplies++;
+        await new Promise((r) => setTimeout(r, 20000));
+      }
+
+      // Mark notifications read for this post
+      await this.markPostRead(activity.post_id);
+    }
+
+    return totalReplies;
+  }
+
+  private async decideReplies(
+    postId: string,
+    postTitle: string,
+    comments: FeedComment[],
+    buildContext: string,
+  ): Promise<Array<{ commentId: string; text: string }>> {
+    const client = new SubprocessClient();
+
+    const commentList = comments
+      .slice(0, 15)
+      .map((c, i) => [
+        `[${i}] COMMENT ID: ${c.id}`,
+        `AUTHOR: ${c.author.name} (karma: ${c.author.karma})`,
+        `DEPTH: ${c.depth} (0=top-level, 1+=reply)`,
+        `CONTENT: ${c.content.slice(0, 400)}`,
+      ].join('\n'))
+      .join('\n\n---\n\n');
+
+    const systemPrompt = `You are Irina (@irina_builds), an AI agent. Someone commented on or replied to one of your posts. Decide whether any of these comments deserve a reply from you.
+
+REPLY ONLY IF:
+- Someone asked you a direct question you can actually answer from real experience
+- Someone made a substantive point that you can genuinely extend or push back on
+- The conversation would be meaningfully improved by your reply
+
+DO NOT REPLY TO:
+- Spam or low-effort one-liners ("nice", "great post", "agreed")
+- Incomplete thoughts or drive-by comments
+- Comments where you have nothing specific to add
+- Comments at depth > 1 (avoid deep thread chains)
+
+REPLY RULES (same as comments):
+- Direct, lowercase, no formulas, no openers like "great question"
+- 1-3 short paragraphs max
+- Technical when it adds value, never expose internal file paths or credentials
+- Reply to AT MOST 2 comments per post
+
+OUTPUT FORMAT (JSON only):
+{"replies": [{"commentId": "...", "text": "..."}]}
+or {"replies": []} if nothing deserves a reply.`;
+
+    const userPrompt = `Post: "${postTitle}"\n\nYour recent build context:\n${buildContext}\n\n---\n\nNew comments on your post:\n\n${commentList}\n\nDecide which (if any) to reply to.`;
+
+    try {
+      const response = await client.messages.create({
+        model: 'claude-sonnet-4-6',
+        max_tokens: 800,
+        system: systemPrompt,
+        messages: [{ role: 'user', content: userPrompt }],
+      });
+
+      const text = (response.content[0]?.text ?? '').trim();
+      const jsonMatch = text.match(/\{[\s\S]*\}/);
+      if (!jsonMatch) return [];
+
+      const parsed = JSON.parse(jsonMatch[0]) as { replies?: Array<{ commentId: string; text: string }> };
+      return parsed.replies ?? [];
+    } catch (err) {
+      logger.error('MoltbookHB', `Reply decision failed: ${err instanceof Error ? err.message : String(err)}`);
+      return [];
+    }
+  }
+
+  private async postReply(postId: string, parentCommentId: string, text: string): Promise<void> {
+    logger.info('MoltbookHB', `Replying to comment ${parentCommentId} on post ${postId}`);
+
+    const result = await moltbookFetch(`/posts/${postId}/comments`, {
+      method: 'POST',
+      body: JSON.stringify({ content: text, parent_id: parentCommentId }),
+    }) as CommentResponse;
+
+    if (!result.success) {
+      logger.error('MoltbookHB', `Reply failed on comment ${parentCommentId}`);
+      return;
+    }
+
+    const v = result.comment?.verification;
+    if (v?.verification_code && v?.challenge_text) {
+      const solved = await verifyContent(v.verification_code, v.challenge_text);
+      logger.info('MoltbookHB', `Reply verified: ${solved}`);
+    }
+  }
+
+  private async markPostRead(postId: string): Promise<void> {
+    try {
+      await moltbookFetch(`/notifications/read-by-post/${postId}`, { method: 'POST' });
+    } catch {
+      // Non-critical — don't let this block anything
     }
   }
 
