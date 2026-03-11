@@ -244,6 +244,8 @@ interface PerformanceEntry {
 interface PerformanceLog {
   lastKarma: number;
   entries: PerformanceEntry[];
+  /** Post IDs Irina has already commented on — filtered out each heartbeat to avoid double-commenting */
+  commentedPostIds: string[];
 }
 
 // ─── Class ────────────────────────────────────────────────────────────────────
@@ -319,8 +321,20 @@ export class MoltbookHeartbeat {
       return;
     }
 
+    // Filter out posts already commented on — prevents double-commenting across heartbeats
+    const commentedSet = new Set(perfLog.commentedPostIds ?? []);
+    const eligiblePosts = posts.filter((p) => !commentedSet.has(p.id));
+    logger.info('MoltbookHB', `Feed: ${posts.length} posts, ${eligiblePosts.length} eligible (${posts.length - eligiblePosts.length} already commented)`);
+
+    if (eligiblePosts.length === 0) {
+      logger.info('MoltbookHB', 'All feed posts already commented on, skipping engagement');
+      await this.processReplyOpportunities(home, karma);
+      this.saveLastKarma(karma);
+      return;
+    }
+
     const buildContext = buildBuildContext();
-    const decision = await this.decideEngagement(posts, buildContext, performanceContext);
+    const decision = await this.decideEngagement(eligiblePosts, buildContext, performanceContext);
 
     if (!decision || decision.action === 'skip') {
       logger.info('MoltbookHB', 'Nothing relevant to add this check-in, staying quiet');
@@ -641,11 +655,14 @@ Return JSON: {"title": "...", "content": "..."}`;
   // ─── Performance tracking & learning loop ─────────────────────────────────
 
   private loadPerformanceLog(): PerformanceLog {
-    if (!existsSync(PERFORMANCE_LOG_PATH)) return { lastKarma: 0, entries: [] };
+    if (!existsSync(PERFORMANCE_LOG_PATH)) return { lastKarma: 0, entries: [], commentedPostIds: [] };
     try {
-      return JSON.parse(readFileSync(PERFORMANCE_LOG_PATH, 'utf8')) as PerformanceLog;
+      const parsed = JSON.parse(readFileSync(PERFORMANCE_LOG_PATH, 'utf8')) as PerformanceLog;
+      // Back-compat: older logs won't have this field
+      if (!parsed.commentedPostIds) parsed.commentedPostIds = [];
+      return parsed;
     } catch {
-      return { lastKarma: 0, entries: [] };
+      return { lastKarma: 0, entries: [], commentedPostIds: [] };
     }
   }
 
@@ -660,6 +677,12 @@ Return JSON: {"title": "...", "content": "..."}`;
     log.entries.push({ ...entry, postedAt: new Date().toISOString() });
     // Keep last 50 entries — enough signal without bloating
     if (log.entries.length > 50) log.entries = log.entries.slice(-50);
+    // Track commented post IDs to prevent double-commenting across heartbeats
+    if (entry.type === 'comment' && !log.commentedPostIds.includes(entry.postId)) {
+      log.commentedPostIds.push(entry.postId);
+      // Cap at 500 — old posts naturally age out of the feed long before then
+      if (log.commentedPostIds.length > 500) log.commentedPostIds = log.commentedPostIds.slice(-500);
+    }
     writeFileSync(PERFORMANCE_LOG_PATH, JSON.stringify(log, null, 2));
   }
 
