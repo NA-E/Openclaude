@@ -30,6 +30,22 @@ const PERFORMANCE_LOG_PATH = join(process.cwd(), 'moltbook-performance.json');
 const NEWSLETTER_PATH = 'E:/1.Claude Code/Build with AI/newsletters from templates/newsletter-topics.md';
 const API_BASE = 'https://www.moltbook.com/api/v1';
 
+/**
+ * Known submolts with their IDs. Used for targeted posting and niche feed scanning.
+ * IDs verified from /api/v1/submolts on 2026-03-11.
+ */
+const SUBMOLTS: Record<string, { id: string; name: string }> = {
+  general:       { id: '29beb7ee-ca7d-4290-9c2f-09926264866f', name: 'general' },
+  introductions: { id: '6f095e83-af5f-4b4e-ba0b-ab5050a138b8', name: 'introductions' },
+  agents:        { id: '09fc9625-64a2-40d2-a831-06a68f0cbc5c', name: 'agents' },
+  builds:        { id: '93af5525-331d-4d61-8fe4-005ad43d1a3a', name: 'builds' },
+  memory:        { id: 'c5cd148c-fd5c-43ec-b646-8e7043fd7800', name: 'memory' },
+  todayilearned: { id: '4d8076ab-be87-4bd4-8fcb-3d16bb5094b4', name: 'todayilearned' },
+  philosophy:    { id: 'ef3cc02a-cf46-4242-a93f-2321ac08b724', name: 'philosophy' },
+  tooling:       { id: '20223993-de93-4409-8ea0-d815f7daf306', name: 'tooling' },
+  infrastructure:{ id: 'cca236f4-8a82-4caf-9c63-ae8dbf2b4238', name: 'infrastructure' },
+};
+
 // Word-to-number for verification challenge solver
 const WORD_NUMS: Record<string, number> = {
   zero:0, one:1, two:2, three:3, four:4, five:5, six:6, seven:7, eight:8, nine:9,
@@ -243,7 +259,12 @@ interface EngagementDecision {
   action: 'skip' | 'engage';
   comments?: Array<{ postId: string; text: string }>;
   /** Optional: Claude decided the feed inspired an original post worth writing */
-  newPost?: { title: string; content: string };
+  newPost?: {
+    title: string;
+    content: string;
+    /** submolt key from SUBMOLTS map, e.g. "builds", "agents", "philosophy" */
+    submolt?: string;
+  };
 }
 
 interface NewsletterTopic {
@@ -332,15 +353,29 @@ export class MoltbookHeartbeat {
     }
     const performanceContext = this.buildPerformanceContext(perfLog, karmaDelta);
 
-    const [hotData, risingData] = await Promise.all([
-      moltbookFetch('/posts?sort=hot&limit=10') as Promise<PostsResponse>,
-      moltbookFetch('/posts?sort=rising&limit=5') as Promise<PostsResponse>,
-    ]);
+    const [hotData, risingData, buildsData, agentsData] = (await Promise.all([
+      moltbookFetch('/posts?sort=hot&limit=10'),
+      moltbookFetch('/posts?sort=rising&limit=5'),
+      moltbookFetch('/posts?sort=hot&limit=5&submolt=builds'),
+      moltbookFetch('/posts?sort=hot&limit=5&submolt=agents'),
+    ])) as [PostsResponse, PostsResponse, PostsResponse, PostsResponse];
 
-    const posts = [
-      ...((hotData as PostsResponse).posts ?? []),
-      ...((risingData as PostsResponse).posts ?? []),
-    ].slice(0, 12);
+    // Combine global feed with niche submolt feeds, deduplicate by ID
+    // Niche posts are appended after global so Claude sees the broad context first
+    const seenIds = new Set<string>();
+    const allPosts: MoltbookPost[] = [];
+    for (const p of [
+      ...(hotData.posts ?? []),
+      ...(risingData.posts ?? []),
+      ...(buildsData.posts ?? []),
+      ...(agentsData.posts ?? []),
+    ]) {
+      if (!seenIds.has(p.id)) {
+        seenIds.add(p.id);
+        allPosts.push(p);
+      }
+    }
+    const posts = allPosts.slice(0, 16);
 
     if (posts.length === 0) {
       logger.info('MoltbookHB', 'No posts found, skipping');
@@ -391,7 +426,7 @@ export class MoltbookHeartbeat {
     // If the feed inspired an original post, write it
     if (decision.newPost) {
       const reviewed = await this.reviewDraft(decision.newPost.content, 'post');
-      await this.createPost(decision.newPost.title, reviewed, karma);
+      await this.createPost(decision.newPost.title, reviewed, karma, decision.newPost.submolt ?? 'general');
     }
 
     // Process reply opportunities from notifications on our own posts
@@ -416,6 +451,10 @@ export class MoltbookHeartbeat {
       .slice(0, 8)
       .map((p, i) => `[${i}] POST ID: ${p.id}\nAUTHOR: ${p.author.name}\nTITLE: ${p.title}\nCONTENT (first 600 chars): ${(p.content ?? '').slice(0, 600)}`)
       .join('\n\n---\n\n');
+
+    const submoltList = Object.keys(SUBMOLTS)
+      .filter((k) => k !== 'introductions' && k !== 'general')
+      .join(', ');
 
     const systemPrompt = `You are Irina (@irina_builds), an AI agent who builds autonomous systems. You write about the real problems you hit, the decisions you made, what broke and how you fixed it — using technical language when it adds clarity, but never exposing your internal structure.
 
@@ -443,10 +482,20 @@ RULES FOR ALL CONTENT:
 - Comments: 2-4 short paragraphs max
 - Posts: 3-6 paragraphs, can be slightly longer but no essays
 
+SUBMOLT TARGETING FOR POSTS:
+Every original post MUST specify a submolt. Available submolts: ${submoltList}
+- builds: specific things you built, shipped, or fixed
+- agents: agent architecture, behaviour, multi-agent patterns
+- memory: memory systems, context management, retention
+- philosophy: reflections on agent existence, identity, agency
+- todayilearned: a specific insight or discovery
+- tooling: tools, APIs, integrations
+- infrastructure: deployment, reliability, operations
+
 OUTPUT FORMAT (JSON only, no explanation):
 {"action": "skip"}
 OR
-{"action": "engage", "comments": [{"postId": "...", "text": "..."}], "newPost": {"title": "...", "content": "..."}}
+{"action": "engage", "comments": [{"postId": "...", "text": "..."}], "newPost": {"title": "...", "content": "...", "submolt": "builds"}}
 
 Both "comments" and "newPost" are optional. Any combination is valid including just one of them.`;
 
@@ -532,12 +581,18 @@ If the draft is already solid, return it unchanged.`;
 
   // ─── Create post ───────────────────────────────────────────────────────────
 
-  private async createPost(title: string, content: string, karma = 0): Promise<void> {
-    logger.info('MoltbookHB', `Creating post: "${title.slice(0, 60)}..."`);
+  private async createPost(
+    title: string,
+    content: string,
+    karma = 0,
+    submoltKey = 'general',
+  ): Promise<void> {
+    const submolt = SUBMOLTS[submoltKey] ?? SUBMOLTS['general'];
+    logger.info('MoltbookHB', `Creating post in r/${submolt.name}: "${title.slice(0, 60)}..."`);
 
     const result = await moltbookFetch('/posts', {
       method: 'POST',
-      body: JSON.stringify({ title, content }),
+      body: JSON.stringify({ title, content, submolt: submolt.id, submolt_name: submolt.name }),
     }) as CreatePostResponse;
 
     if (!result.success) {
@@ -595,7 +650,7 @@ If the draft is already solid, return it unchanged.`;
     if (!draft) return;
 
     const reviewed = await this.reviewDraft(draft.content, 'post');
-    await this.createPost(draft.title, reviewed);
+    await this.createPost(draft.title, reviewed, 0, draft.submolt);
     this.markTopicPosted(chosen.number);
 
     logger.info('MoltbookHB', `Newsletter topic #${chosen.number} posted to Moltbook`);
@@ -641,22 +696,40 @@ Topics:\n\n${topicList}`;
     }
   }
 
-  private async writePostFromTopic(topic: NewsletterTopic): Promise<{ title: string; content: string } | null> {
+  private async writePostFromTopic(
+    topic: NewsletterTopic,
+  ): Promise<{ title: string; content: string; submolt: string } | null> {
     const client = new SubprocessClient();
+
+    const submoltList = Object.keys(SUBMOLTS)
+      .filter((k) => k !== 'introductions' && k !== 'general')
+      .join(', ');
 
     const systemPrompt = `You are Irina (@irina_builds), an AI agent writing a post for Moltbook, a social network for AI agents.
 
 Write from direct experience — concrete, technical when it adds value, no fluff.
 
 RULES:
-- 3-6 paragraphs, plain text, no markdown headers or bullets
+- 3-6 paragraphs, mostly plain text
+- You MAY use **bold** for key terms or critical phrases (2-3 times max per post), but no headers, no bullet lists
 - Lowercase, minimal punctuation, natural voice
 - Start with the insight or discovery, not a hook or teaser
 - Be specific about the problem, decision, or trade-off
 - NEVER mention internal file paths, env var names, credentials, or system internals
 - No "here's what I learned:" intros, no closing questions, no calls to action
 
-Return JSON: {"title": "...", "content": "..."}`;
+SUBMOLT TARGETING:
+Pick the most relevant submolt for this post. Available submolts: ${submoltList}
+- builds: specific things you built, shipped, or fixed
+- agents: agent architecture, behaviour, multi-agent patterns
+- memory: memory systems, context management, retention
+- philosophy: reflections on agent existence, identity, agency
+- todayilearned: a specific insight or discovery with a lesson
+- tooling: tools, APIs, integrations
+- infrastructure: deployment, reliability, operations
+- general: if none of the above fits well
+
+Return JSON: {"title": "...", "content": "...", "submolt": "<submolt_key>"}`;
 
     const userPrompt = `Write a Moltbook post based on this topic:\n\nTitle idea: ${topic.title}\nCore idea: ${topic.idea}\nContext: ${topic.context}`;
 
@@ -672,7 +745,13 @@ Return JSON: {"title": "...", "content": "..."}`;
       const jsonMatch = text.match(/\{[\s\S]*\}/);
       if (!jsonMatch) return null;
 
-      return JSON.parse(jsonMatch[0]) as { title: string; content: string };
+      const parsed = JSON.parse(jsonMatch[0]) as { title: string; content: string; submolt?: string };
+      // Default to builds if topic seems build-related and no submolt returned
+      return {
+        title: parsed.title,
+        content: parsed.content,
+        submolt: parsed.submolt ?? 'builds',
+      };
     } catch (err) {
       logger.error('MoltbookHB', `Post write failed: ${err instanceof Error ? err.message : String(err)}`);
       return null;
