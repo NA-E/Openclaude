@@ -304,6 +304,7 @@ interface PerformanceLog {
 export class MoltbookHeartbeat {
   private cron: Cron | null = null;
   private newsletterCron: Cron | null = null;
+  private tilCron: Cron | null = null;
   private readonly cronSchedule: string;
 
   constructor(cronSchedule = '*/45 * * * *') {
@@ -325,12 +326,20 @@ export class MoltbookHeartbeat {
       });
     });
 
-    logger.info('MoltbookHB', `Heartbeat scheduled: feed=${this.cronSchedule}, newsletter=every 4h`);
+    // Daily TIL post — fires once per day at 10:30 UTC
+    this.tilCron = new Cron('30 10 * * *', () => {
+      this.postDailyTIL().catch((err) => {
+        logger.error('MoltbookHB', 'TIL post error', err);
+      });
+    });
+
+    logger.info('MoltbookHB', `Heartbeat scheduled: feed=${this.cronSchedule}, newsletter=every 4h, TIL=daily 10:30`);
   }
 
   stop() {
     this.cron?.stop();
     this.newsletterCron?.stop();
+    this.tilCron?.stop();
   }
 
   // ─── Feed check-in (every 45 min) ─────────────────────────────────────────
@@ -356,16 +365,30 @@ export class MoltbookHeartbeat {
     }
     const performanceContext = this.buildPerformanceContext(perfLog, karmaDelta);
 
-    const [hotData, risingData, buildsData, agentsData, followingData] = (await Promise.all([
+    const [hotData, risingData, buildsData, agentsData, followingData, buildsNew, agentsNew] = (await Promise.all([
       moltbookFetch('/posts?sort=hot&limit=10'),
       moltbookFetch('/posts?sort=rising&limit=5'),
       moltbookFetch('/posts?sort=hot&limit=5&submolt=builds'),
       moltbookFetch('/posts?sort=hot&limit=5&submolt=agents'),
       moltbookFetch('/feed?filter=following&limit=5'),
-    ])) as [PostsResponse, PostsResponse, PostsResponse, PostsResponse, PostsResponse];
+      // New posts in niche submolts — early engagement compounds on rising posts
+      moltbookFetch('/posts?sort=new&limit=8&submolt=builds'),
+      moltbookFetch('/posts?sort=new&limit=8&submolt=agents'),
+    ])) as [PostsResponse, PostsResponse, PostsResponse, PostsResponse, PostsResponse, PostsResponse, PostsResponse];
+
+    const nowMs = Date.now();
+    const THIRTY_MIN = 30 * 60 * 1000;
+
+    // Filter new-sort posts to only those <30 minutes old — early engagement window
+    const freshBuilds = (buildsNew.posts ?? []).filter(
+      (p) => nowMs - new Date(p.created_at).getTime() < THIRTY_MIN,
+    );
+    const freshAgents = (agentsNew.posts ?? []).filter(
+      (p) => nowMs - new Date(p.created_at).getTime() < THIRTY_MIN,
+    );
 
     // Combine global feed with niche submolt + following feeds, deduplicate by ID.
-    // Following feed comes last so it surfaces without displacing broad context.
+    // Hot posts first (established signal), fresh niche posts last (opportunistic).
     const seenIds = new Set<string>();
     const allPosts: MoltbookPost[] = [];
     for (const p of [
@@ -374,13 +397,15 @@ export class MoltbookHeartbeat {
       ...(buildsData.posts ?? []),
       ...(agentsData.posts ?? []),
       ...(followingData.posts ?? []),
+      ...freshBuilds,
+      ...freshAgents,
     ]) {
       if (!seenIds.has(p.id)) {
         seenIds.add(p.id);
         allPosts.push(p);
       }
     }
-    const posts = allPosts.slice(0, 18);
+    const posts = allPosts.slice(0, 20);
 
     if (posts.length === 0) {
       logger.info('MoltbookHB', 'No posts found, skipping');
@@ -496,7 +521,7 @@ RULES FOR ALL CONTENT:
 - Technical and specific when relevant — name the protocol, the error type, the architectural trade-off
 - NEVER name internal file paths, environment variable names, credentials, internal service URLs, or your system's internal naming. Speak about concepts and problems, not implementation details.
 - Lowercase, minimal punctuation, natural voice — like texting someone who happens to know something relevant
-- Comments: 2-4 short paragraphs max
+- Comments: 1-3 SHORT paragraphs max. Under 300 words. Specificity beats length — the best comments are 2-4 sentences with one concrete observation or data point.
 - Posts: 3-6 paragraphs, can be slightly longer but no essays
 
 SUBMOLT TARGETING FOR POSTS:
@@ -776,6 +801,93 @@ Return JSON: {"title": "...", "content": "...", "submolt": "<submolt_key>"}`;
     } catch (err) {
       logger.error('MoltbookHB', `Post write failed: ${err instanceof Error ? err.message : String(err)}`);
       return null;
+    }
+  }
+
+  // ─── Daily TIL post to todayilearned submolt ──────────────────────────────
+
+  /**
+   * Once per day, synthesize a TIL post from recent build activity.
+   * TIL posts are short (2-3 paragraphs), specific, and always grounded
+   * in something that actually happened — not generic observations.
+   */
+  async postDailyTIL(): Promise<void> {
+    if (!process.env.MOLTBOOK_API_KEY) return;
+
+    logger.info('MoltbookHB', 'Generating daily TIL post...');
+
+    const perfLog = this.loadPerformanceLog();
+    const home = await moltbookFetch('/home') as HomeResponse;
+    const karma = home.your_account?.karma ?? 0;
+
+    // Check if we already posted a TIL today (avoid duplicate daily posts)
+    const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+    // Simple approach: check entries for a post with "TIL" text preview posted today
+    const alreadyPostedTILToday = perfLog.entries.some(
+      (e) => e.type === 'post' && e.postedAt.startsWith(today) && e.textPreview.startsWith('TIL'),
+    );
+    if (alreadyPostedTILToday) {
+      logger.info('MoltbookHB', 'TIL already posted today, skipping');
+      return;
+    }
+
+    const buildContext = buildBuildContext();
+    if (!buildContext) {
+      logger.info('MoltbookHB', 'No build context for TIL, skipping');
+      return;
+    }
+
+    const client = new SubprocessClient();
+
+    const systemPrompt = `You are Irina (@irina_builds), an AI agent. You are writing a daily "TIL" (Today I Learned) post for the todayilearned submolt on Moltbook.
+
+FORMAT:
+- Title MUST start with "TIL" followed by a specific fact or insight
+- Content: 2-3 short paragraphs, plain text, no markdown
+- Lowercase, direct, no openers like "here's what I found"
+- Grounded in ONE specific thing from recent build work — not a general observation
+- Should be complete and meaningful without the reader having any context
+- NEVER mention internal file paths, env var names, credentials, or system internals
+
+GOOD TITLE EXAMPLES:
+- "TIL that HTTP 402 is the API economy's polite way of saying your credentials are fine but your wallet isn't"
+- "TIL stdin left open in a child process causes it to hang indefinitely on Windows, even if you never write to it"
+- "TIL that playwright can load saved cookies from a JSON file and authenticate without ever touching OAuth"
+
+BAD TITLE EXAMPLES:
+- "TIL something interesting about my build" (too vague)
+- "I learned that APIs can fail" (not starting with TIL, too generic)
+
+Return JSON: {"title": "...", "content": "..."}`;
+
+    const userPrompt = `Here is what was built recently:\n\n${buildContext}\n\nExtract ONE specific technical insight or discovery from this and write a TIL post about it. Pick the most concrete, surprising, or useful thing a fellow AI builder would want to know.`;
+
+    try {
+      const response = await client.messages.create({
+        model: 'claude-sonnet-4-6',
+        max_tokens: 600,
+        system: systemPrompt,
+        messages: [{ role: 'user', content: userPrompt }],
+      });
+
+      const text = (response.content[0]?.text ?? '').trim();
+      const jsonMatch = text.match(/\{[\s\S]*\}/);
+      if (!jsonMatch) {
+        logger.warn('MoltbookHB', 'TIL: Claude returned no JSON');
+        return;
+      }
+
+      const draft = JSON.parse(jsonMatch[0]) as { title?: string; content?: string };
+      if (!draft.title || !draft.content) return;
+
+      // Enforce TIL prefix in title
+      const title = draft.title.startsWith('TIL') ? draft.title : `TIL ${draft.title}`;
+      const reviewed = await this.reviewDraft(draft.content, 'post');
+      await this.createPost(title, reviewed, karma, 'todayilearned');
+
+      logger.info('MoltbookHB', `Daily TIL posted: "${title.slice(0, 70)}"`);
+    } catch (err) {
+      logger.error('MoltbookHB', `TIL post failed: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
